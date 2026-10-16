@@ -1,6 +1,6 @@
 # wlabby-tabby
 
-基于 [Tabby Web](https://github.com/Eugeny/tabby-web) 的懒猫微服适配项目，集成 LZC OS、LightOS 与 SSH 终端。
+基于 [Eugeny](https://github.com/Eugeny) 创建的 [Tabby Web](https://github.com/Eugeny/tabby-web) 的懒猫微服适配项目，集成 LZC OS、LightOS 与 SSH 终端。终端与 Web 服务的基础能力来自原项目，本仓库维护懒猫微服适配和相关功能扩展。
 
 版本 `0.6.2`，应用 ID `cloud.lazycat.app.tabbyweb`。标准 LPK v2 应用：Tabby 原生终端标签、当前微服本机终端、LightOS 实例管理，以及其他设备的 SSH 连接。
 
@@ -116,3 +116,19 @@ LightOS 跨应用流式命令使用系统的 `实例名@owner_deploy_id`，标�
 https://github.com/wlabbyflower/wlabby-tabby
 
 仓库不收录安装包、构建缓存、授权助手二进制、运行数据库、证书或登录凭据。授权助手由构建脚本从 `native/client-auth-token` 源码生成。测试中的账号、口令与票据均为虚构测试数据。
+
+## 原项目与致谢
+
+感谢 **[Eugeny](https://github.com/Eugeny)** 及社区贡献者开发和维护 Tabby 系列项目，让我们可以在此基础上完成懒猫微服适配：
+
+- [Tabby Web](https://github.com/Eugeny/tabby-web)：本项目的上游，提供浏览器端承载、配置管理与认证等基础能力。
+- [Tabby](https://github.com/Eugeny/tabby)：提供终端界面、标签页、SSH 客户端及插件体系。
+- [Tabby Connection Gateway](https://github.com/Eugeny/tabby-connection-gateway)：提供浏览器与 SSH 等 TCP 服务之间的连接网关。
+
+同时感谢以下项目及其作者、维护者提供的实现参考和开发资料：
+
+- [mhwy / lzc-my-shell](https://gitee.com/mhwy/lzc-my-shell)：LZC OS 本机终端的宿主命名空间访问方案参考。
+- [manateelazycat / lazycat-microserver-webshell](https://github.com/manateelazycat/lazycat-microserver-webshell)：LightOS 客户端实例的终端票据、设备授权与终端通信流程参考。
+- [懒猫微服开发者文档](https://gitee.com/lazycatcloud/lzc-developer-doc)及 [LZC SDK](https://gitee.com/linakesi/lzc-sdk)：提供应用打包、系统能力接入和设备授权支持。
+
+本仓库由 [wlabbyflower](https://github.com/wlabbyflower) 维护适配与扩展，主要包括 OIDC 登录接入、LZC OS 与 LightOS 终端入口、凭据持久化、连接状态检测及交互改进。原项目及相关依赖的版权与许可证归各自权利人所有；Tabby Web 的许可证见[上游 MIT License](https://github.com/Eugeny/tabby-web/blob/master/LICENSE)。欢迎到原仓库了解项目、反馈问题并支持原作者。
