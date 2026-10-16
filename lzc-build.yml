@@ -1,0 +1,26 @@
+manifest: ./lzc-manifest.yml
+pkgout: ./
+icon: ./icon.png
+
+# content/ 里的文件会原样打进 LPK，运行时只读挂在 /lzcapp/pkg/content/。
+# 包含插件修复、网关兼容启动器和 LightOS 管理服务/页面。
+contentdir: ./content
+buildscript: python3 scripts/preflight.py
+
+# tabby-web 用本地 docker 构建一层很小的移植层（补上游缺失的 OIDC backend，见
+# lpk/settings_lazycat.py）。FROM 命中 registry.lazycat.cloud，所以上游那些大层走
+# upstream-match 由微服从官方源拉，打进 LPK 的只有我们这一层 COPY，包很小。
+# mariadb / 连接网关都是纯 registry.lazycat.cloud 远端引用，不需要本地构建。
+images:
+  tabby:
+    context: .
+    dockerfile: ./lpk/Dockerfile.tabby
+    builder: local
+    upstream-match: registry.lazycat.cloud
+
+# Dedicated host shell service only. No host networking or Docker socket mount.
+compose_override:
+  services:
+    hostterm:
+      pid: host
+      privileged: true

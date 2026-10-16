@@ -1,0 +1,118 @@
+# wlabby-tabby
+
+基于 [Tabby Web](https://github.com/Eugeny/tabby-web) 的懒猫微服适配项目，集成 LZC OS、LightOS 与 SSH 终端。
+
+版本 `0.6.2`，应用 ID `cloud.lazycat.app.tabbyweb`。标准 LPK v2 应用：Tabby 原生终端标签、当前微服本机终端、LightOS 实例管理，以及其他设备的 SSH 连接。
+
+仅支持桌面客户端（Windows、macOS、Linux）；包声明不支持 Android、iOS（含 iPad）和 tvOS 智慧屏。
+
+## 使用
+
+打开应用后先显示 **OIDC 登录** 页面，点击大号登录按钮，使用当前微服账号进入连接首页。
+
+连接首页集中显示本机、LightOS 和其他 SSH 设备。已保存的 SSH 连接支持搜索、导入、导出；成功连接会进入当前账号的最近连接记录。顶部“连接首页”按钮可以随时返回，不关闭现有终端。
+
+- **LZC OS 本机终端**：管理员完成 OIDC 登录后，点击本机入口直接进入当前微服的 root shell。不需要开启 SSHD，也不需要 SSH 密码。宿主命名空间访问仅授予独立的 `hostterm` 服务；其他服务不提升权限。浏览器连接使用管理员接口签发、45 秒有效的一次性授权。
+- **LightOS 实例**：右上角终端图标。动态列出实例，选择后打开原生交互终端标签，以实例配置的用户名进入 shell，不要求安装 SSHD。
+- **LightOS 客户端实例**：单独列出当前账号接入的 PC 客户端。直接打开 Tabby 原生终端，通过 LightOS 签发的终端票据和设备 API 授权建立 WebSocket，支持输入输出、复制粘贴、尺寸同步、心跳和重连。不要求实例提供 `webshell_url`，不依赖 iframe 或另一张网页。客户端须在线并已开启“接入 LightOS”。
+- **管理 LightOS 实例**：在同一菜单打开管理标签。支持列表、详情、创建、启停、删除和维护命令；行内“打开终端”也可新建终端标签。
+- **新建 SSH 连接**：右上角加号，填主机、端口、用户名及密码，保存并连接。密码可直接填写并加密保存；留空则在连接时输入。默认密码认证；勾选“记住”并成功登录后，密码按登录账号加密保存，后续重连自动读取。可取消勾选以不保存。高级设置仍通过 Tabby 原生配置页面编辑。
+
+- **显示 / 隐藏左侧栏**：侧栏边缘箭头可收起、展开，顶部也保留侧栏图标。当前浏览器会记住选择，刷新后仍生效。
+- **终端右键菜单**：复制、粘贴、重新连接、断开连接，适用于 SSH、LZC OS 和 LightOS。
+- **复制粘贴**：使用浏览器剪贴板 API；无法直接读取剪贴板时打开手动粘贴框。键盘快捷键与浏览器原生粘贴分别处理，一次操作只发送一次，连续操作两次仍正常发送两次。保留原生多行确认和 bracketed paste 行为。
+- **连接状态**：终端顶部显示正在连接、等待密码、等待主机密钥、已连接或已断开，并提供断开 / 重连按钮。连接失败时提示对应排查方向，详细错误仍在终端中显示。
+- **密码管理**：连接首页 → 已保存密码，可以替换或删除当前账号保存的 SSH 密码和私钥口令，不会显示密码明文，也不影响当前会话。已有 Tabby 保险库仍在原设置中管理。
+
+LZC OS 和 LightOS 入口仅微服管理员可用。进入本机终端前须完成 Tabby 的微服 OIDC 登录；未登录时显示明确提示。应用不内置任何用户设备、实例或连接配置。管理入口为当前应用域名下的 `/lightos/`。切换标签不重新加载其他会话。
+
+## 数据持久化
+
+连接配置、主机密钥和加密凭据都通过当前 OIDC 登录账号隔离，数据库位于 `/lzcapp/var/mysql`。密码存储按账号、目标主机/端口、SSH 用户名区分；使用由应用稳定密钥和账号派生的 Fernet 认证加密密钥。数据库内仅保存密文，刷新、重启和正常升级后可继续使用。新建 SSH 表单填写的密码会立即加密保存；留空时，在连接弹窗勾选“记住”并成功登录后保存。原有未真正保存的密码无法从旧版本恢复。
+
+最近连接按当前账号保存，最多保留 50 条，首页显示最近 12 条。可以清空记录，不删除连接配置和密码。导出文件只包含 SSH 名称、分组、地址、端口和用户名，不导出密码、密钥、命令或环境变量。导入仅接受本项目格式，按地址、端口和用户名跳过重复连接。
+
+浏览器原生凭据接口（keytar shim）接入服务端存储，不再使用上游只返回空值的模拟实现。凭据读写要求有效登录，POST 受 CSRF 校验，另一个账号无法读取、覆盖或删除当前账号的凭据。已有 Tabby 加密保险库设置继续沿用。
+
+安装包不包含运行时数据库与凭据。在另一台微服全新安装后使用那台微服和当前账号自己的数据；它不会携带开发设备的连接或密码。
+
+## 空闲连接处理
+
+SSH 网关和 LightOS 终端使用应用层心跳：每 15 秒检测，等待响应最多 45 秒；网络恢复、切回窗口或浏览器休眠后恢复时重新探测，避免因后台计时器暂停立即误判。连接失效后明确显示断线，拒绝继续向关闭的 WebSocket 发送输入；不会自动把用户后续按键重放到新 shell。
+
+SSH 网关使用公开的异步流读写接口和写入背压。当任意一端关闭时，另一端及读取任务随之清理。TCP 开启系统保活。浏览器回到前台时重新触发当前终端焦点恢复。
+
+LightOS 和 SSH 断线后可使用状态栏或右键菜单中的“重新连接”。升级应用会中断现有终端，需要重新打开标签。
+
+## 可移植性和脱敏
+
+- 应用域名、微服域名、OIDC 参数都在安装或运行时取得，不固定设备名、局域网 IP 或用户名。
+- 数据库密码与 Django 密钥使用 `stable_secret` 在目标微服派生，包内仅含模板。
+- LPK 仅包含声明的应用文件与自有镜像层，不携带数据库、SSH 私钥、浏览器登录态、测试设备或已有连接。
+- `buildscript` 自动运行 `scripts/preflight.py`：阻止固定微服域名、私人目录、局域网地址、私钥和运行时数据库进入发布内容，并清理 Python 字节码缓存。
+- `scripts/release.sh` 统一执行构建、lint、完整 LPK（含嵌套内容和镜像层）脱敏审计及 SHA-256 校验文件生成。
+- Docker 构建上下文通过 `.dockerignore` 仅开放所需文件。所有基础镜像均使用公开懒猫 Registry 引用；自有层通过 `embed:tabby` 分发。
+- 本机终端参考 [lzc-my-shell](https://gitee.com/mhwy/lzc-my-shell)，通过独立服务的 `pid: host`、`privileged` 和 `nsenter` 进入宿主命名空间。`compose_override` 只作用于 `hostterm`，不挂载 Docker socket，不使用 host 网络。授权签发接口仍位于仅监听 loopback 的管理员服务中；内部终端端口验证签名、来源与防重放，不能仅伪造身份头进入。
+
+另一个微服安装同一 LPK 后会读取它自己的系统配置。连接其他设备的 SSH 功能需要目标设备开启 SSHD；本机入口不依赖 SSH。LightOS 功能需要系统支持 `lightosctl` 并授权 `lightos.manage`。镜像平台必须匹配目标微服架构；当前发布构建以 lzc-cli 显示的目标平台为准。
+
+## 构建和验证
+
+前置：Node.js 18+、lzc-cli 2+、Python 3、Go 1.24.6+、Docker builder，已配置目标微服。可通过 `TABBY_GO` 指定 Go 可执行文件。构建时为 amd64 和 arm64 生成静态 SDK 授权助手，运行时只读取目标微服注入的应用证书；安装包不包含证书、私钥、用户票据或设备令牌。
+
+```bash
+cd tabby-web-lpk
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p test_lightos_manager.py -v
+node tests/test_connection_health.cjs
+node tests/test_gateway_defaults.cjs
+node tests/test_terminal_actions.cjs
+node tests/test_ui_preferences.cjs
+node tests/test_credential_storage.cjs
+node tests/test_connection_ui.cjs
+# 在网关原始运行时验证异步 I/O 与连接清理
+# 下列挂载路径由当前工作目录计算，不依赖开发者机器。
+docker run --rm --volume "$PWD:/workspace:ro" --workdir /workspace \
+  --entrypoint python \
+  registry.lazycat.cloud/abby/eugeny/tabby-connection-gateway:d9737cecff2904db \
+  -B -m unittest discover -s tests -p test_gateway.py -v
+./scripts/release.sh
+lzc-cli lpk info tabby-web-0.6.2.lpk
+```
+
+发布脚本默认生成带版本号的包及 SHA-256 校验文件，遇到同名包会停止，不覆盖旧产物。构建不包含安装或部署操作。默认开发配置使用独立 `.dev` 应用 ID。
+
+配置保存会等待服务端写入成功，再显示成功或继续连接，避免上游延迟保存导致立即刷新后丢失连接和主机密钥。
+
+插件源码位于 `content/tabby-lightos/src/`。运行 `python3 scripts/build-plugin.py` 生成 `dist/`，同时执行 JavaScript 语法检查；发布前会自动重新生成，避免手动维护编译产物。
+
+`tests/browser-062.cjs` 验证缺少 `webshell_url` 时客户端仍能打开 Tabby 原生终端、等待设备就绪、单次粘贴、断开重连、授权失败和离线限制。`tests/test_client_transport.py` 在实际网关运行时通过 HTTP 和 WebSocket 测试客户端票据、工作区与字节流协议；SDK 查询在该测试中由测试桩替代。`native/client-auth-token/main_test.go` 另用临时证书、真实 TLS/gRPC 和签名校验验证 SDK 设备授权，包含授权拒绝时不返回令牌。宿主终端还在隔离 PID 命名空间中验证了 root shell、Ctrl+C、尺寸同步和心跳；没有为验证而安装应用或接入运行中微服的宿主命名空间。
+
+浏览器回归测试见 `tests/browser-regression.cjs` 和 `tests/browser-ssh.cjs`。前者验证登录页、连接首页、各粘贴入口的输入次数、状态与重连、历史、密码管理和配置导入导出；后者使用临时 SSH 测试服务验证首次密码保存、刷新与测试后端重启后免输密码，以及 SSH 粘贴和重连。测试只接受回环地址及 `tabby-*-ui-test` 容器名，不使用真实设备凭据。需要 Playwright、Chromium，SSH 测试另需 `ssh2`。通过 `PLAYWRIGHT_MODULE`、`SSH2_MODULE` 可指定本地模块位置，`TEST_BASE_URL` 和 `TEST_CONTAINER` 可指定隔离测试环境。
+
+## 实现与边界
+
+- `content/tabby-lightos/`：Tabby 原生插件、动态连接配置、管理标签、心跳和 SSH 新建表单。
+- `content/lightos-manager.py`：管理员 API，标准库 HTTP 服务，参数数组调用系统 CLI。
+- `content/lightos-terminal.py`：管理员 WebSocket 与 PTY，支持双向输入输出、Ctrl+C、尺寸同步、登录用户选择，最多同时打开 8 个 LightOS 终端。
+- `content/host-terminal.py`、`terminal-access.py`、`pty-shell.py`：独立宿主终端、一次性授权与控制终端分配。
+- `content/lightos-clients.py`：当前账号的客户端实例发现、终端票据、设备授权和原生 WebSocket 代理。
+- `content/gateway.py`：WebSocket 握手兼容、心跳与双向流生命周期修复。只合并相同的重复 Key/Version 请求头，冲突值仍拒绝。
+- `lpk/settings_lazycat.py`：补齐上游 OIDC backend。
+- `lpk/gateway_defaults.py`：用户接口和网关选择接口的同源网关默认值，覆盖末尾斜杠变体；前端也直接选择内置网关，避免依赖外部网关池或只靠响应注入。
+- `lpk/lpk_support/`：OIDC 登录页、账号隔离的加密凭据与连接历史、迁移和带 CSRF 验证的 API。
+- `content/fix-app-dist.sh`：修复上游插件目录并安装本项目原生插件。
+
+LightOS 跨应用流式命令使用系统的 `实例名@owner_deploy_id`，标识从实例列表动态取得。实例 rootfs 位于 `/lzcapp/var/lightos/<name>`，删除实例不主动删除 rootfs。MariaDB 数据位于 `/lzcapp/var/mysql`。LightOS 维护命令最长等待 45 秒。
+
+镜像内置 Tabby `1.0.187-nightly.1`；运行时追加的版本包仍位于临时容器目录，重启后不保留。`/gateway/` 保持微服登录认证，不能设置为公开路径。
+
+客户端实例按原版 [LCMD WebShell](https://github.com/manateelazycat/lazycat-microserver-webshell) 的 `/api/client-instances`、`/api/client-instances/terminal-ticket` 和设备 `/s/<service>/workspace`、`/ws` 接口接入，通过 `lightosctl system admin-info --json` 动态定位 LightOS，不固定域名。跨应用请求使用系统委托票据；用户身份仍由目标 ingress 验证。
+
+开发规范参考[官方开发者文档](https://gitee.com/lazycatcloud/lzc-developer-doc)，本机终端使用官方 `compose_override` 扩展，后续上架需按该机制的要求申报权限。
+
+
+## 源码仓库
+
+https://github.com/wlabbyflower/wlabby-tabby
+
+仓库不收录安装包、构建缓存、授权助手二进制、运行数据库、证书或登录凭据。授权助手由构建脚本从 `native/client-auth-token` 源码生成。测试中的账号、口令与票据均为虚构测试数据。

@@ -1,0 +1,26 @@
+package: cloud.lazycat.app.tabbyweb
+version: 0.6.2
+name: Tabby Web
+description: Tabby 终端 / SSH 客户端的浏览器版本，自带自托管连接网关
+author: "Eugeny / Lazy Cat 社区移植"
+license: MIT
+homepage: https://github.com/Eugeny/tabby-web
+min_os_version: 1.5.2
+unsupported_platforms:
+  - android
+  - ios
+  - tvos
+locales:
+  zh-CN:
+    name: Tabby 终端（浏览器版）
+    description: 在浏览器里使用 Tabby 终端，支持 SSH / Telnet / 串口，自带自托管连接网关
+  en-US:
+    name: Tabby Web
+    description: Tabby terminal and SSH client in the browser, with a bundled
+      self-hosted connection gateway
+permissions:
+  required:
+    - net.internet
+    - net.lan
+    - lightos.manage
+    - lzcapp.user_delegate

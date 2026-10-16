@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OIDC 登录 · Tabby</title>
+<style>
+  :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#11151c;color:#ecf0f6;font:16px/1.7 system-ui,-apple-system,"Microsoft YaHei",sans-serif;min-height:100vh;display:grid;place-items:center;padding:28px}
+  main{width:min(100%,580px)}.brand{letter-spacing:.12em;color:#9daabe;font-size:14px;margin-bottom:42px}h1{font-size:clamp(44px,9vw,68px);line-height:1.1;margin:0 0 24px;letter-spacing:-.04em}p{color:#aebacc;margin:0 0 30px}.login{display:flex;align-items:center;justify-content:center;min-height:64px;padding:16px 24px;background:#8fb8ff;color:#0f203b;border-radius:12px;text-decoration:none;font-size:21px;font-weight:650}.login:hover{background:#b4d0ff}.login:focus-visible{outline:3px solid white;outline-offset:5px}.note{font-size:14px;margin:22px 0 0;color:#90a0b5}.features{display:flex;flex-wrap:wrap;gap:24px;border-top:1px solid #2a3341;margin-top:46px;padding-top:22px;color:#90a0b5;font-size:14px}
+</style>
+<main>
+  <div class="brand">TABBY / 微服终端</div>
+  <h1>OIDC 登录</h1>
+  <p>先登录微服账号，再打开终端。连接配置和保存的密码会跟随当前账号。</p>
+  <a class="login" href="{{LOGIN_URL}}" target="_top">使用微服账号进行 OIDC 登录 →</a>
+  <p class="note">使用当前微服账号，无需另外注册。SSH 密码在连接设备时填写。</p>
+  <div class="features"><span>LZC OS 本机</span><span>LightOS 实例</span><span>其他 SSH 设备</span></div>
+</main>
+</html>

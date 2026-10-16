@@ -1,0 +1,13 @@
+const assert=require('node:assert/strict');
+const {install,saveConnectionPassword}=require('../content/tabby-lightos/dist/credential-storage.js');
+(async()=>{const calls=[],keytar={},connector={loginService:{user:{id:1}}};const fetch=async(url,options)=>{calls.push({url,options});return{ok:true,json:async()=>({password:'test-secret'})}};
+install(keytar,connector,fetch,{cookie:'other=x; XSRF-TOKEN=test-token'});
+await keytar.setPassword('ssh@device.example.test:22','root','test-secret');assert.ok(calls[0].url.endsWith('/write/'));assert.equal(calls[0].options.credentials,'same-origin');assert.equal(calls[0].options.headers['X-XSRF-TOKEN'],'test-token');
+assert.equal(await keytar.getPassword('ssh@device.example.test:22','root'),'test-secret');await keytar.deletePassword('ssh@device.example.test:22','root');assert.ok(calls[2].url.endsWith('/delete/'));
+const profile={options:{host:'fixture.example.test',port:2222,user:'tester'}};
+let stored=null;const native={setPassword:async(...args)=>stored=args};
+await saveConnectionPassword(native,null,profile,'synthetic-form-secret');assert.deepEqual(stored,['ssh@fixture.example.test:2222','tester','synthetic-form-secret']);
+stored=null;await saveConnectionPassword(native,null,profile,'');assert.equal(stored,null);
+let vaultSecret=null;await saveConnectionPassword(native,{isEnabled:()=>true,addSecret:async s=>vaultSecret=s},profile,'synthetic-vault-secret');assert.equal(vaultSecret.type,'ssh:password');assert.equal(vaultSecret.value,'synthetic-vault-secret');assert.equal(stored,null);assert.equal(profile.options.password,undefined);
+connector.loginService.user=null;assert.equal(await keytar.getPassword('ssh@device.example.test:22','root'),null);assert.equal(calls.length,3);
+console.log('Credential adapter tests passed: read/write/delete, session and CSRF, signed-out access.');})().catch(e=>{console.error(e);process.exitCode=1});

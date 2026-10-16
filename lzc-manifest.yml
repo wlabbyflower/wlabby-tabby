@@ -1,0 +1,174 @@
+usage: |
+  # OIDC 登录
+
+  先点击“使用微服账号进行 OIDC 登录”。登录成功后进入连接首页。
+  无需注册新账号；SSH 密码是目标设备的密码，在连接时填写。
+
+  连接首页有三个入口：
+  - LZC OS 本机：连接当前微服。仅管理员可用，不需要开启 SSHD 或输入 SSH 密码。
+  - LightOS 实例：选择服务端实例或已接入的客户端实例打开终端，也可以进入实例管理。
+  - 其他 SSH 设备：填写地址、端口、用户名和密码，保存后连接。密码可留空，在连接时再输入。
+
+  新建 SSH 时填写的密码会加密保存。留空时，在连接提示中输入并勾选“记住”。
+  下次连接不用重复输入密码。
+  在连接首页的“已保存密码”中可以替换或删除，仅对当前账号生效。
+  导入、导出连接不包含密码或密钥。
+
+  左侧栏边缘的箭头可以收起、展开侧栏，顶部也保留了侧栏开关。
+  终端右键可以复制、粘贴、重新连接、断开连接。
+  连接中断后点击“重新连接”。升级应用会中断现有终端，请先保存工作。
+
+application:
+  image: registry.lazycat.cloud/abby/eugeny/tabby-connection-gateway:d9737cecff2904db
+  subdomain: tabby
+  entries:
+    - id: lightos
+      title: LightOS 管理
+      path: /lightos/
+
+  # 微服 OIDC 的回调地址。social_django 在 tabby/urls.py 里挂在
+  # api/1/auth/social/ 下，backend 名是 oidc，所以完整路径是 .../complete/oidc/。
+  # 没有这一项系统就不会注入 LAZYCAT_AUTH_OIDC_* 环境变量。
+  oidc_redirect_path: /api/1/auth/social/complete/oidc/
+
+  environment:
+    - HOST_TERMINAL_SECRET={{ sha256sum (stable_secret "tabby-host-terminal") }}
+
+  upstreams:
+    - location: /lzc-terminal/
+      backend: http://hostterm:9003/
+      fix_websocket_header: true
+      disable_auto_health_checking: true
+
+    - location: /lightos-terminal/
+      backend: http://127.0.0.1:9002/
+      fix_websocket_header: true
+      disable_auto_health_checking: true
+
+    - location: /lightos/
+      backend: http://127.0.0.1:9001/
+      backend_launch_command: /lzcapp/pkg/content/lightos-manager.py
+
+    # 连接网关：浏览器直连的 WebSocket → TCP 代理，必须排在 / 前面，否则会被 / 吃掉。
+    # 它是一个纯 WebSocket 服务，对普通 HTTP GET 不会返回 200，所以关掉自动健康检测，
+    # 否则这条上游会被判成不健康。
+    - location: /gateway/
+      backend: http://gateway:9000/
+      fix_websocket_header: true
+      disable_auto_health_checking: true
+
+    # Tabby Web 本体（Django + gunicorn，静态前端由 whitenoise 提供）
+    - location: /
+      backend: http://tabby:80/
+
+  health_check:
+    # 探 tabby 而不是探 app 容器：本应用的主体在 services 里，app 容器只是个占位。
+    test_url: http://tabby:80/api/1/auth/providers
+    start_period: 240s
+    timeout: 5s
+
+  injects:
+    # 双重兜底：前端选择器与 Django middleware 已提供同源网关默认值。
+    # 免配置连接网关：给 /api/1/user 的响应补上 custom_connection_gateway。
+    # 用 ctx.request.host 现算域名，不把域名写死进用户配置（微服域名重启后可能变）。
+    - id: tabby-default-gateway
+      "on": response
+      when:
+        - /api/1/user
+      do: |
+        try {
+          const u = ctx.body.getJSON();
+          if (u && typeof u === "object" && !u.custom_connection_gateway) {
+            u.custom_connection_gateway = "wss://" + ctx.request.host + "/gateway/";
+            ctx.body.set(u);
+          }
+        } catch (e) {
+          // body 为空或不是 JSON 时什么都不做，避免影响登录流程
+        }
+
+services:
+  hostterm:
+    image: registry.lazycat.cloud/abby/eugeny/tabby-connection-gateway:d9737cecff2904db
+    entrypoint: python /lzcapp/pkg/content/host-terminal.py
+    environment:
+      - HOST_TERMINAL_ENABLED=1
+      - HOST_TERMINAL_SECRET={{ sha256sum (stable_secret "tabby-host-terminal") }}
+    mem_limit: "256m"
+
+  # ---------------------------------------------------------------- Tabby 本体
+  tabby:
+    # 本地构建的一层移植层，FROM 就是下面那份 registry 镜像，只多一个
+    # lpk/settings_lazycat.py（见 lzc-build.yml 的 images.tabby）。
+    image: embed:tabby
+    depends_on:
+      - tabbydb
+    environment:
+      # 上游 settings.py 的 AUTHENTICATION_BACKENDS 里那个 OIDC backend 是坏的
+      # （social_core 4.x 的 OpenIdConnectAuth 是抽象基类，name 为空，登录必然
+      # Backend not found）。换成 tabby.settings_lazycat 里的真子类。
+      # manage.py 和 tabby/wsgi.py 都是 os.environ.setdefault，所以这里优先。
+      - DJANGO_SETTINGS_MODULE=tabby.settings_lazycat
+      - PORT=80
+      - DEBUG=False
+      - DATABASE_URL=mysql://root:{{ sha256sum (stable_secret "tabby-db") | trunc 24 }}@tabbydb/tabby
+      - DJANGO_SECRET_KEY={{ sha256sum (stable_secret "tabby-django") | trunc 40 }}
+      # ---- 微服 OIDC（系统注入的部署期变量，见 advanced-oidc.md）----
+      # tabby-web 用 social_core 的 OpenIdConnectAuth，它会去
+      # <OIDC_ENDPOINT>/.well-known/openid-configuration 做自动发现，所以只需要 issuer。
+      - SOCIAL_AUTH_OIDC_OIDC_ENDPOINT=${LAZYCAT_AUTH_OIDC_ISSUER_URI}
+      - SOCIAL_AUTH_OIDC_KEY=${LAZYCAT_AUTH_OIDC_CLIENT_ID}
+      - SOCIAL_AUTH_OIDC_SECRET=${LAZYCAT_AUTH_OIDC_CLIENT_SECRET}
+      - SOCIAL_AUTH_OIDC_NAME=懒猫微服
+    # 上游镜像在构建期用 `manage.py add_version` 落盘版本包，而 add_version 里
+    # fsspec 的 put(dir, target) 会把整个临时目录塞进 target 下一层，实际布局是
+    #   /app-dist/1.0.187-nightly.1/tmpXXXXXXXX/{tabby-core,tabby-ssh,...}
+    # 而 /api/1/versions 只列一级子目录，于是前端拿到的 plugins 是 ["tmpXXXXXXXX"]，
+    # tabby-core / tabby-ssh 这些插件全部加载不到，界面起不来。
+    # 该脚本在 entrypoint 之前把它拍平（幂等）。
+    # 脚本放在 content/ 而不是内联在这里，是因为 manifest 部署阶段会做 ${VAR} 渲染，
+    # 内含 $v / $d 的 shell 循环写在 manifest 里容易被误当成变量引用。
+    setup_script: /bin/sh /lzcapp/pkg/content/fix-app-dist.sh
+    healthcheck:
+      # alpine 基础镜像自带 busybox wget，够用，不用额外装 curl
+      test:
+        - CMD-SHELL
+        - wget -q -O /dev/null http://127.0.0.1/api/1/auth/providers || exit 1
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 240s
+      start_interval: 5s
+    mem_limit: "1g"
+
+  # ------------------------------------------------------------------- 数据库
+  tabbydb:
+    image: registry.lazycat.cloud/abby/library/mariadb:e661d294e48141ef
+    environment:
+      - MARIADB_DATABASE=tabby
+      # 必须和 tabby 的 DATABASE_URL 用同一个 stable_secret 同一种派生方式
+      - MARIADB_ROOT_PASSWORD={{ sha256sum (stable_secret "tabby-db") | trunc 24 }}
+    binds:
+      # 容器 rootfs 重启即丢，只有 /lzcapp/var 与 /lzcapp/cache 会保留
+      - /lzcapp/var/mysql:/var/lib/mysql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        # mariadb:10.7.1 是 Ubuntu 基础镜像，没有 healthcheck.sh（alpine 变体才有）。
+        # mysqladmin ping 只要服务端能应答就返回 0，符合“已经可以连了”的语义。
+        - mysqladmin ping -h 127.0.0.1 --silent
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+      start_interval: 5s
+    mem_limit: "1g"
+
+  # --------------------------------------------------------------- 连接网关
+  # 浏览器不能直接开 TCP，SSH / Telnet 都由这个服务代发。
+  # --no-auth：它的访问控制交给微服 ingress（/gateway/ 不在 public_path 里，
+  # 必须带合法登录态才能到达），这样用户不用再抄一个 token 到设置里。
+  gateway:
+    image: registry.lazycat.cloud/abby/eugeny/tabby-connection-gateway:d9737cecff2904db
+    entrypoint: python /lzcapp/pkg/content/gateway.py
+    command: --no-auth --host 0.0.0.0 --port 9000
+    mem_limit: "256m"

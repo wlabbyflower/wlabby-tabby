@@ -1,0 +1,30 @@
+# Build outputs and local Lazy Cat CLI state
+.lzc-cli-cache/
+*.lpk
+*.lpk.sha256
+/content/client-auth-token/
+
+# Runtime data, credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.sqlite
+*.sqlite3
+*.db
+*.log
+lzc-deploy-params.yml
+
+# Language and editor caches
+__pycache__/
+*.py[cod]
+node_modules/
+.venv/
+venv/
+.pytest_cache/
+.DS_Store
+.idea/
+.vscode/

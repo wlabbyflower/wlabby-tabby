@@ -1,0 +1,10 @@
+**
+!lpk/
+!lpk/Dockerfile.tabby
+!lpk/settings_lazycat.py
+!lpk/gateway_defaults.py
+!lpk/urls_lazycat.py
+!lpk/lpk_support/
+!lpk/lpk_support/**
+lpk/**/__pycache__/
+lpk/**/*.pyc

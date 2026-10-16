@@ -1,0 +1,19 @@
+# Tabby Web 的 LPK 移植层（一层，很小）。
+#
+# 基镜像就是本 LPK 使用的那份 tabby-web，已经通过
+#   lzc-cli appstore copy-image ghcr.io/eugeny/tabby-web@sha256:5ffa6b22...
+# 拉到懒猫官方源 registry.lazycat.cloud，并且是不可变 hash tag。
+# 移植层补充 OIDC、网关默认值和加密凭据模型/接口，配合 lzc-manifest.yml 里的
+# DJANGO_SETTINGS_MODULE=tabby.settings_lazycat 生效，用来修上游缺失的 OIDC backend
+# （原因见 lpk/settings_lazycat.py 的模块注释）。
+#
+# 基础层命中 upstream-match，由微服从官方源拉；只有下面这层 COPY 会打进 LPK，所以
+# LPK 体积基本不受影响。
+FROM registry.lazycat.cloud/abby/eugeny/tabby-web:c21e8e2b8f44622f
+
+COPY lpk/settings_lazycat.py /app/tabby/settings_lazycat.py
+
+COPY lpk/gateway_defaults.py /app/tabby/gateway_defaults.py
+
+COPY lpk/lpk_support /app/tabby/lpk_support
+COPY lpk/urls_lazycat.py /app/tabby/urls_lazycat.py

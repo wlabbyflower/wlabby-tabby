@@ -1,0 +1,8 @@
+---
+# LPK 清单里的 Go 模板表达式（stable_secret / 系统参数）与 healthcheck 命令行
+# 天然较长，80 列会逼着把它们折行，反而降低可读性并容易改错。
+extends: default
+
+rules:
+  line-length:
+    max: 200

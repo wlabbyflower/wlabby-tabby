@@ -1,0 +1,4 @@
+# 开发态只改包 ID，避免 dev 部署覆盖正式包。
+# 其余配置全部沿用 lzc-build.yml，不要在这里重复拷贝。
+package_override:
+  package: cloud.lazycat.app.tabbyweb.dev

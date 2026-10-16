@@ -1,0 +1,16 @@
+const assert=require('node:assert/strict');
+const ui=require('../content/tabby-lightos/dist/connection-ui.js');
+const profile={id:'test',type:'ssh',name:'test',group:'devices',options:{host:'host.example.test',port:22,user:'root',auth:'password',password:'never-export',privateKeys:['private-key'],commands:['secret-command'],env:{TOKEN:'secret'}}};
+const exported=ui.exportProfiles([profile,{...profile,isBuiltin:true}]);
+assert.equal(exported.profiles.length,1);
+for(const secret of ['never-export','private-key','secret-command','TOKEN'])assert.ok(!JSON.stringify(exported).includes(secret));
+const hostile=JSON.parse(JSON.stringify(exported));hostile.profiles[0].options.password='do-not-import';hostile.profiles[0].options.commands=['do-not-run'];
+const imported=ui.importProfiles(hostile,[],()=> 'ssh:new');assert.deepEqual(imported[0].options,{host:'host.example.test',port:22,user:'root',auth:'password'});
+assert.equal(ui.importProfiles(exported,imported,()=> 'unused').length,0);
+assert.throws(()=>ui.importProfiles({...exported,version:2},[],()=>''));
+assert.throws(()=>ui.importProfiles({...exported,profiles:[{...exported.profiles[0],options:{...profile.options,port:0}}]},[],()=>''));
+assert.match(ui.explain('\x1b[31m X Error: connect ECONNREFUSED\x1b[0m'),/SSHD/);
+assert.match(ui.explain('All configured authentication methods failed'),/认证失败/);
+assert.match(ui.explain('Failed to connect to the connection gateway'),/网关/);
+assert.match(ui.explain('终端连接心跳超时'),/心跳超时/);
+console.log('Connection UI passed: credentials and commands excluded from export/import, validation, deduplication and diagnostic messages.');
