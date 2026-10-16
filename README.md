@@ -2,7 +2,7 @@
 
 基于 [Eugeny](https://github.com/Eugeny) 创建的 [Tabby Web](https://github.com/Eugeny/tabby-web) 的懒猫微服适配项目，集成 LZC OS、LightOS 与 SSH 终端。终端与 Web 服务的基础能力来自原项目，本仓库维护懒猫微服适配和相关功能扩展。
 
-版本 `0.6.2`，应用 ID `cloud.lazycat.app.tabbyweb`。标准 LPK v2 应用：Tabby 原生终端标签、当前微服本机终端、LightOS 实例管理，以及其他设备的 SSH 连接。
+版本 `0.6.3`，应用 ID `cloud.lazycat.app.tabbyweb`。标准 LPK v2 应用：Tabby 原生终端标签、当前微服本机终端、LightOS 实例管理，以及其他设备的 SSH 连接。
 
 仅支持桌面客户端（Windows、macOS、Linux）；包声明不支持 Android、iOS（含 iPad）和 tvOS 智慧屏。
 
@@ -15,7 +15,7 @@
 - **LZC OS 本机终端**：管理员完成 OIDC 登录后，点击本机入口直接进入当前微服的 root shell。不需要开启 SSHD，也不需要 SSH 密码。宿主命名空间访问仅授予独立的 `hostterm` 服务；其他服务不提升权限。浏览器连接使用管理员接口签发、45 秒有效的一次性授权。
 - **LightOS 实例**：右上角终端图标。动态列出实例，选择后打开原生交互终端标签，以实例配置的用户名进入 shell，不要求安装 SSHD。
 - **LightOS 客户端实例**：单独列出当前账号接入的 PC 客户端。直接打开 Tabby 原生终端，通过 LightOS 签发的终端票据和设备 API 授权建立 WebSocket，支持输入输出、复制粘贴、尺寸同步、心跳和重连。不要求实例提供 `webshell_url`，不依赖 iframe 或另一张网页。客户端须在线并已开启“接入 LightOS”。
-- **管理 LightOS 实例**：在同一菜单打开管理标签。支持列表、详情、创建、启停、删除和维护命令；行内“打开终端”也可新建终端标签。
+- **管理 LightOS 实例**：点击“管理实例”，打开当前微服的 LightOS 原生管理页面进行部署、启停、删除等操作。管理页面在独立窗口打开，当前 Tabby 终端继续保持连接。
 - **新建 SSH 连接**：右上角加号，填主机、端口、用户名及密码，保存并连接。密码可直接填写并加密保存；留空则在连接时输入。默认密码认证；勾选“记住”并成功登录后，密码按登录账号加密保存，后续重连自动读取。可取消勾选以不保存。高级设置仍通过 Tabby 原生配置页面编辑。
 
 - **显示 / 隐藏左侧栏**：侧栏边缘箭头可收起、展开，顶部也保留侧栏图标。当前浏览器会记住选择，刷新后仍生效。
@@ -24,7 +24,21 @@
 - **连接状态**：终端顶部显示正在连接、等待密码、等待主机密钥、已连接或已断开，并提供断开 / 重连按钮。连接失败时提示对应排查方向，详细错误仍在终端中显示。
 - **密码管理**：连接首页 → 已保存密码，可以替换或删除当前账号保存的 SSH 密码和私钥口令，不会显示密码明文，也不影响当前会话。已有 Tabby 保险库仍在原设置中管理。
 
-LZC OS 和 LightOS 入口仅微服管理员可用。进入本机终端前须完成 Tabby 的微服 OIDC 登录；未登录时显示明确提示。应用不内置任何用户设备、实例或连接配置。管理入口为当前应用域名下的 `/lightos/`。切换标签不重新加载其他会话。
+LZC OS 和 LightOS 入口仅微服管理员可用。进入本机终端前须完成 Tabby 的微服 OIDC 登录；未登录时显示明确提示。应用不内置任何用户设备、实例或连接配置。`/lightos/` 仅提供原生管理页面的入口，不再维护另一套容器管理表单。切换标签不重新加载其他会话。
+
+## LightOS WebShell 接入
+
+本应用通过 LPK 的 `lightos.webshell` 资源导出机制注册终端提供方。安装本版本后，在支持第三方 WebShell 的 LightOS 管理页面选择 **Tabby Web**，即可打开指定实例的 Tabby 原生终端；客户端实例也支持通过 `client:<实例标识>` 进入。不同版本 LightOS 的菜单名称可能不同。
+
+入口支持 `?name=实例名@owner_deploy_id`、`?target=实例名@owner_deploy_id` 和原有 `?lightos=实例名&owner=owner_deploy_id`。完成 OIDC 登录后会继续打开目标，连接前重新核对当前可访问列表及在线状态；不可访问的目标显示错误，不自动连接其他实例。无目标参数时打开连接首页。
+
+容器部署和启停由 LightOS 管理，终端由 Tabby 提供。管理页地址通过系统 `lightosctl system admin-info --json` 动态读取，不固定微服域名，不向地址附加登录票据。这个入口不是会话迁移：切换到另一终端应用会使用另一终端会话。
+
+## Agent 输出与滚动
+
+普通终端在持续输出时跟随最新内容；向上滚动查看历史后保持正在查看的行，滚到底部、输入键盘内容或使用原生“滚动到底部”操作后恢复跟随。窗口缩放和仍在保留范围内的历史裁剪不会把视图强行拉回。历史已被应用清除或超过保留上限时，无法继续保留已删除的内容。
+
+启用鼠标上报或使用全屏界面的 Agent、编辑器继续使用 xterm 原生鼠标协议。鼠标上报、焦点通知及终端状态回复不会作为键盘输入触发滚到底部。
 
 ## 数据持久化
 
@@ -87,12 +101,12 @@ lzc-cli lpk info tabby-web-0.6.2.lpk
 
 `tests/browser-062.cjs` 验证缺少 `webshell_url` 时客户端仍能打开 Tabby 原生终端、等待设备就绪、单次粘贴、断开重连、授权失败和离线限制。`tests/test_client_transport.py` 在实际网关运行时通过 HTTP 和 WebSocket 测试客户端票据、工作区与字节流协议；SDK 查询在该测试中由测试桩替代。`native/client-auth-token/main_test.go` 另用临时证书、真实 TLS/gRPC 和签名校验验证 SDK 设备授权，包含授权拒绝时不返回令牌。宿主终端还在隔离 PID 命名空间中验证了 root shell、Ctrl+C、尺寸同步和心跳；没有为验证而安装应用或接入运行中微服的宿主命名空间。
 
-浏览器回归测试见 `tests/browser-regression.cjs` 和 `tests/browser-ssh.cjs`。前者验证登录页、连接首页、各粘贴入口的输入次数、状态与重连、历史、密码管理和配置导入导出；后者使用临时 SSH 测试服务验证首次密码保存、刷新与测试后端重启后免输密码，以及 SSH 粘贴和重连。测试只接受回环地址及 `tabby-*-ui-test` 容器名，不使用真实设备凭据。需要 Playwright、Chromium，SSH 测试另需 `ssh2`。通过 `PLAYWRIGHT_MODULE`、`SSH2_MODULE` 可指定本地模块位置，`TEST_BASE_URL` 和 `TEST_CONTAINER` 可指定隔离测试环境。
+浏览器回归测试见 `tests/browser-regression.cjs` 和 `tests/browser-ssh.cjs`。新增 `tests/browser-scroll.cjs` 验证真实随包 xterm 的持续输出、双向滚动、窗口缩放、历史裁剪及 TUI 鼠标协议；`tests/browser-webshell.cjs` 验证 WebShell 入口、OIDC 返回目标及原生管理入口。前者验证登录页、连接首页、各粘贴入口的输入次数、状态与重连、历史、密码管理和配置导入导出；后者使用临时 SSH 测试服务验证首次密码保存、刷新与测试后端重启后免输密码，以及 SSH 粘贴和重连。测试只接受回环地址及 `tabby-*-ui-test` 容器名，不使用真实设备凭据。需要 Playwright、Chromium，SSH 测试另需 `ssh2`。通过 `PLAYWRIGHT_MODULE`、`SSH2_MODULE` 可指定本地模块位置，`TEST_BASE_URL` 和 `TEST_CONTAINER` 可指定隔离测试环境。
 
 ## 实现与边界
 
 - `content/tabby-lightos/`：Tabby 原生插件、动态连接配置、管理标签、心跳和 SSH 新建表单。
-- `content/lightos-manager.py`：管理员 API，标准库 HTTP 服务，参数数组调用系统 CLI。
+- `content/lightos-manager.py`：管理员 API、原生 LightOS 管理入口发现及兼容管理接口。
 - `content/lightos-terminal.py`：管理员 WebSocket 与 PTY，支持双向输入输出、Ctrl+C、尺寸同步、登录用户选择，最多同时打开 8 个 LightOS 终端。
 - `content/host-terminal.py`、`terminal-access.py`、`pty-shell.py`：独立宿主终端、一次性授权与控制终端分配。
 - `content/lightos-clients.py`：当前账号的客户端实例发现、终端票据、设备授权和原生 WebSocket 代理。

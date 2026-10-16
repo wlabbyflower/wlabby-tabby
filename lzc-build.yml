@@ -24,3 +24,8 @@ compose_override:
     hostterm:
       pid: host
       privileged: true
+
+# Discoverable terminal provider for LightOS; management stays in LightOS.
+resource_exports:
+  - kind: lightos.webshell
+    source: ./resources/lightos.webshell

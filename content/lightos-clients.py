@@ -25,6 +25,14 @@ def admin_info():
     return info
 
 
+def admin_home():
+    info = admin_info()
+    base = urlsplit(info.get('base_url', '').strip())
+    if base.scheme not in ('http', 'https') or not base.hostname or base.username or base.password or any(c in info.get('base_url', '') for c in '\r\n'):
+        raise RuntimeError('系统未提供有效的 LightOS 管理入口')
+    return urlunsplit((base.scheme, base.netloc, base.path or '/', urlencode({'view': 'home'}), ''))
+
+
 def admin_request(headers, path, body=None):
     info = admin_info()
     request = Request('http://app.' + info['deploy_id'] + '.lzcx' + path,

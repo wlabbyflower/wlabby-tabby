@@ -156,6 +156,102 @@
     const api={explain,exportProfiles,importProfiles};if(typeof module==='object'&&module.exports)module.exports=api;root.TabbyConnectionUI=api;
 })(typeof window==='undefined'?globalThis:window);
 
+/* Keep scrollback anchored while output arrives; leave TUI mouse handling to xterm. */
+(function(root){
+    function passiveInput(data){
+        const text=typeof data==='string'?data:data&&data.toString();
+        return typeof text==='string'&&/^(?:\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[M[\s\S]{3}|\x1b\[\d+;\d+;\d+M|\x1b\[[IO]|\x1b\[[?>]?[\d;]*[Rcn]|\x1b\](?:10|11);[^\x07\x1b]*(?:\x07|\x1b\\))$/.test(text);
+    }
+    function install(tab){
+        const frontend=tab.frontend,xterm=frontend&&frontend.xterm,host=tab.content&&tab.content.nativeElement;
+        if(!xterm||!host||!xterm.onWriteParsed||!xterm.registerMarker)return ()=>{};
+        const viewport=host.querySelector('.xterm-viewport'),win=host.ownerDocument.defaultView;
+        let pinned=true,anchor=null,restoring=false,dragging=false,passive=false,disposed=false,wheelRemainder=0;
+        const restorers=[],listeners=[],disposables=[];
+        const normal=()=>xterm.buffer.active.type==='normal';
+        const discard=()=>{if(anchor)anchor.dispose();anchor=null;};
+        function capture(){
+            if(disposed||!normal()||restoring)return;
+            const b=xterm.buffer.active;
+            pinned=b.viewportY>=b.baseY;
+            discard();
+            if(!pinned)anchor=xterm.registerMarker(b.viewportY-b.baseY-b.cursorY);
+        }
+        function restore(){
+            if(disposed||!normal()||dragging||restoring)return;
+            restoring=true;
+            try{
+                if(pinned)bottom.call(frontend);
+                else xterm.scrollToLine(Math.max(0,Math.min(anchor&&!anchor.isDisposed?anchor.line:0,xterm.buffer.active.baseY)));
+            }finally{restoring=false;}
+        }
+        function listen(target,type,fn,options){if(!target)return;target.addEventListener(type,fn,options);listeners.push(()=>target.removeEventListener(type,fn,options));}
+        function wrap(object,name,fn){const original=object[name];if(typeof original!=='function')return;const value=fn(original);object[name]=value;restorers.push(()=>{if(object[name]===value)object[name]=original;});}
+        const bottom=frontend.scrollToBottom;
+        wrap(frontend,'scrollToBottom',original=>function(...args){if(passive)return;const result=original.apply(this,args);capture();return result;});
+        for(const name of ['scrollToTop','scrollPages','scrollLines'])wrap(frontend,name,original=>function(...args){const result=original.apply(this,args);capture();return result;});
+        wrap(tab,'sendInput',original=>function(data,...args){const previous=passive;passive=passiveInput(data);try{return original.call(this,data,...args);}finally{passive=previous;}});
+        // Handle normal scrollback once, before legacy mousewheel and parent scroll handlers.
+        // Mouse-reporting applications and alternate-screen TUIs retain xterm's own protocol.
+        listen(host,'wheel',event=>{
+            if(!normal()||xterm.modes.mouseTrackingMode!=='none'||event.ctrlKey||event.metaKey||event.altKey||event.shiftKey||!event.deltaY)return;
+            event.preventDefault();event.stopImmediatePropagation();
+            const height=(viewport&&viewport.clientHeight||host.clientHeight)/Math.max(1,xterm.rows)||16;
+            wheelRemainder+=event.deltaMode===1?event.deltaY:event.deltaMode===2?event.deltaY*xterm.rows:event.deltaY/height;
+            const lines=Math.trunc(wheelRemainder);wheelRemainder-=lines;
+            if(lines){xterm.scrollLines(lines);capture();}
+        },{capture:true,passive:false});
+        // Scrollbar dragging must not compete with incoming output or auto-follow.
+        listen(host,'pointerdown',event=>{
+            if(!normal()||event.button!==0||!viewport||event.target!==viewport)return;
+            const box=viewport.getBoundingClientRect();
+            if(event.clientX<box.right-18)return;
+            dragging=true;pinned=false;
+        },true);
+        const finish=()=>{if(!dragging)return;dragging=false;capture();};
+        listen(win,'pointerup',finish,true);listen(win,'pointercancel',finish,true);listen(win,'blur',finish);
+        listen(viewport,'scroll',()=>{if(dragging&&!restoring)capture();});
+        disposables.push(xterm.onWriteParsed(restore));
+        if(typeof frontend.resizeHandler==='function'){
+            const original=frontend.resizeHandler;
+            win.removeEventListener('resize',original);
+            wrap(frontend,'resizeHandler',fn=>function(...args){const result=fn.apply(this,args);restore();return result;});
+            win.addEventListener('resize',frontend.resizeHandler);
+            restorers.push(()=>{win.removeEventListener('resize',frontend.resizeHandler);win.addEventListener('resize',original);});
+        }
+        capture();
+        return ()=>{disposed=true;discard();disposables.forEach(d=>d.dispose());listeners.reverse().forEach(f=>f());restorers.reverse().forEach(f=>f());};
+    }
+    const api={install,passiveInput};if(typeof module==='object'&&module.exports)module.exports=api;root.TabbyTerminalScroll=api;
+})(typeof window==='undefined'?globalThis:window);
+
+/* LightOS WebShell provider entry: resolve only targets in the fresh visible list. */
+(function(root){
+    function target(url){
+        const q=url.searchParams;
+        const value=q.get('target')||q.get('name')||q.get('lightos')||'';
+        if(!value)return null;
+        if(value.length>512||/[\u0000-\u0020\u007f]/.test(value))throw Error('LightOS 终端目标无效');
+        if(value.startsWith('client:')){if(value.length===7)throw Error('客户端实例标识无效');return {kind:'client',id:value.slice(7)};}
+        const parts=value.split('@'),owner=parts.length===2?parts[1]:(q.get('owner')||'');
+        if(parts.length>2||!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$/.test(parts[0])||owner&&!/^[a-zA-Z0-9_.-]+$/.test(owner))throw Error('LightOS 实例标识无效');
+        return {kind:'instance',name:parts[0],owner};
+    }
+    async function resolve(value,loadInstances,loadClients){
+        if(value.kind==='client'){
+            const item=(await loadClients()).find(i=>i.id===value.id);
+            if(!item)throw Error('客户端实例不可访问，请返回连接首页刷新列表');
+            if(!['running','online','connected'].includes(item.status))throw Error('客户端不在线，请先连接该设备');
+            return {kind:'client',item};
+        }
+        const matches=(await loadInstances()).filter(i=>i.name===value.name&&(!value.owner||i.owner_deploy_id===value.owner));
+        if(matches.length!==1)throw Error('LightOS 实例不可访问或标识不唯一，请返回连接首页选择');
+        if(matches[0].status!=='running')throw Error('实例未运行，请先在 LightOS 中启动');
+        return {kind:'instance',item:matches[0]};
+    }
+    const api={target,resolve};if(typeof module==='object'&&module.exports)module.exports=api;root.TabbyWebShellEntry=api;
+})(typeof window==='undefined'?globalThis:window);
+
 /* Tabby plugin: real terminal tabs sharing Tabby's renderer, shortcuts and tab bar. */
 (function () {
     const ng = require('@angular/core');
@@ -367,7 +463,7 @@
     class ConnectionHub extends core.BaseTabComponent {
         constructor(profiles,config,app,modal,zone){
             super();this.profiles=profiles;this.config=config;this.app=app;this.modal=modal;this.zone=zone;
-            this.saved=[];this.lightos=[];this.clients=[];this.clientNotice='';this.recent=[];this.credentials=[];this.local=null;this.loading=false;this.error='';this.notice='';this.adminNotice='';this.query='';this.panel='connections';this.alive=true;
+            this.saved=[];this.lightos=[];this.clients=[];this.clientNotice='';this.recent=[];this.credentials=[];this.local=null;this.loading=false;this.error='';this.entryError='';this.notice='';this.adminNotice='';this.query='';this.panel='connections';this.alive=true;
             this.subscribeUntilDestroyed(this.focused$,()=>this.refresh());
         }
         ngOnInit(){this.refresh();}
@@ -440,7 +536,7 @@
         <section *ngIf="!loggedIn" class="login-gate"><h1>OIDC 登录</h1><p>先登录微服账号，再打开终端。</p><button class="btn btn-primary" (click)="login()">使用微服账号进行 OIDC 登录 →</button></section>
         <ng-container *ngIf="loggedIn">
         <header class="heading"><div><h1>连接首页</h1><span class="muted">{{username}} · OIDC 已登录</span></div><div class="actions"><button class="btn btn-secondary" [disabled]="loading" (click)="refresh()">{{loading?'正在刷新…':'刷新列表'}}</button><button class="btn btn-primary" (click)="newSSH()">＋ 新建 SSH 连接</button></div></header>
-        <div class="banner failure" *ngIf="error" role="alert">{{error}} <button *ngIf="error.includes('OIDC')" class="btn btn-sm btn-secondary" (click)="login()">OIDC 登录</button></div><div class="banner" *ngIf="notice" role="status">{{notice}}</div>
+        <div class="banner failure" *ngIf="entryError" role="alert">{{entryError}}</div><div class="banner failure" *ngIf="error" role="alert">{{error}} <button *ngIf="error.includes('OIDC')" class="btn btn-sm btn-secondary" (click)="login()">OIDC 登录</button></div><div class="banner" *ngIf="notice" role="status">{{notice}}</div>
         <section class="cards" aria-label="选择连接类型">
             <button class="card-button" [disabled]="!local" (click)="open(local)"><strong>LZC OS 本机</strong><span class="muted">直接进入当前微服终端</span><small>管理员可用 · 无需 SSH 密码</small></button>
             <button class="card-button" (click)="panel='lightos'"><strong>LightOS 实例</strong><span class="muted">选择实例，打开终端</span><small>{{lightos.length}} 个服务端实例 · {{clients.length}} 个客户端实例</small></button>
@@ -454,7 +550,7 @@
             <p class="muted">导入和导出只包含连接地址、端口、用户名及名称，不包含密码或密钥。</p><input #search class="form-control search" type="search" placeholder="搜索名称、主机或用户名" aria-label="搜索 SSH 连接" (input)="query=search.value">
             <div *ngIf="!saved.length" class="empty">还没有 SSH 连接，点击右上角“新建 SSH 连接”。</div><div *ngIf="saved.length && !filtered.length" class="empty">没有匹配的连接。</div><div class="list" *ngIf="filtered.length"><div class="row-item" *ngFor="let p of filtered"><div><strong>{{p.name}}</strong><span *ngIf="hasPassword(p)" class="badge-saved">密码已保存</span><div class="description">{{p.options.user}}@{{p.options.host}}:{{p.options.port || 22}} <span *ngIf="p.group"> · {{p.group}}</span></div></div><button class="btn btn-primary" (click)="open(p)">连接</button></div></div>
         </section>
-        <section *ngIf="panel==='lightos'"><h2>客户端实例</h2><p class="muted">在电脑客户端中开启“接入 LightOS”后，可在这里直接连接其终端。</p><p *ngIf="clientNotice" class="muted" role="status">{{clientNotice}}</p><div *ngIf="!clients.length && !clientNotice" class="empty">当前账号没有已接入的客户端实例。</div><div *ngIf="clients.length" class="list"><div class="row-item" *ngFor="let i of clients"><div><strong>{{i.name}}</strong><div class="description">{{i.platform}} · {{i.status}}</div></div><button class="btn btn-primary" [disabled]="i.status!=='running' && i.status!=='online' && i.status!=='connected'" (click)="openClient(i)">打开客户端终端</button></div></div><div class="heading"><h2>LightOS 实例</h2><button class="btn btn-secondary" (click)="manageLightOS()">管理实例</button></div><div *ngIf="!lightos.length" class="empty">暂无实例。管理员可在“管理实例”中创建。</div><div *ngIf="lightos.length" class="list"><div class="row-item" *ngFor="let i of lightos"><div><strong>{{i.name}}</strong><div class="description">{{i.status}}</div></div><button class="btn btn-primary" [disabled]="i.status!=='running'" (click)="openLightOS(i)">打开终端</button></div></div></section>
+        <section *ngIf="panel==='lightos'"><h2>客户端实例</h2><p class="muted">在电脑客户端中开启“接入 LightOS”后，可在这里直接连接其终端。</p><p *ngIf="clientNotice" class="muted" role="status">{{clientNotice}}</p><div *ngIf="!clients.length && !clientNotice" class="empty">当前账号没有已接入的客户端实例。</div><div *ngIf="clients.length" class="list"><div class="row-item" *ngFor="let i of clients"><div><strong>{{i.name}}</strong><div class="description">{{i.platform}} · {{i.status}}</div></div><button class="btn btn-primary" [disabled]="i.status!=='running' && i.status!=='online' && i.status!=='connected'" (click)="openClient(i)">打开客户端终端</button></div></div><div class="heading"><h2>LightOS 实例</h2><button class="btn btn-secondary" (click)="manageLightOS()">管理实例</button></div><div *ngIf="!lightos.length" class="empty">暂无实例。管理员可打开 LightOS 创建。</div><div *ngIf="lightos.length" class="list"><div class="row-item" *ngFor="let i of lightos"><div><strong>{{i.name}}</strong><div class="description">{{i.status}}</div></div><button class="btn btn-primary" [disabled]="i.status!=='running'" (click)="openLightOS(i)">打开终端</button></div></div></section>
         <section *ngIf="panel==='passwords'"><h2>已保存密码</h2><p class="muted">仅显示当前账号保存的凭据。替换或删除后，下次连接时生效，不影响已打开的终端。Tabby 保险库中的凭据仍在原设置中管理。</p><div *ngIf="!credentials.length" class="empty">没有保存的密码。连接设备时勾选“记住”，成功登录后会保存在这里。</div><div *ngIf="credentials.length" class="list"><div class="row-item" *ngFor="let item of credentials"><div><strong>{{item.account}}</strong><div class="description">{{item.service.startsWith('ssh-private-key:')?'私钥口令 · ':''}}{{item.service}}</div></div><div class="actions"><button class="btn btn-secondary" (click)="replacePassword(item)">替换密码</button><button class="btn btn-outline-danger" (click)="deletePassword(item)">删除密码</button></div></div></div></section>
         </ng-container>
     </main>`})(ConnectionHub);
@@ -581,11 +677,12 @@
                 const text=tab.frontend&&tab.frontend.getSelection();if(!text)return;
                 event.preventDefault();event.clipboardData.setData('text/plain',text);
             };
+            const scrollCleanup=window.TabbyTerminalScroll.install(tab);
             const host=tab.content&&tab.content.nativeElement;
             const context=event=>{event.preventDefault();event.stopImmediatePropagation();zone.run(()=>tab.buildContextMenu().then(items=>platform.popupContextMenu(items,event)));};
             if(host)host.addEventListener('contextmenu',context,true);
             document.addEventListener('paste',paste,true);document.addEventListener('copy',copy,true);
-            tab.__clipboardCleanup=()=>{window.removeEventListener('keydown',keyboardPaste,true);if(host)host.removeEventListener('contextmenu',context,true);document.removeEventListener('paste',paste,true);document.removeEventListener('copy',copy,true);};
+            tab.__clipboardCleanup=()=>{scrollCleanup();window.removeEventListener('keydown',keyboardPaste,true);if(host)host.removeEventListener('contextmenu',context,true);document.removeEventListener('paste',paste,true);document.removeEventListener('copy',copy,true);};
         }
         detach(tab){if(tab.__clipboardCleanup)tab.__clipboardCleanup();super.detach(tab);}
     }
@@ -610,16 +707,21 @@
             const refocus=()=>{if(!document.hidden&&!document.querySelector('ngb-modal-window, .modal.show, input:focus')&&this.app.activeTab&&this.app.activeTab.emitFocused)this.app.activeTab.emitFocused();};
             window.addEventListener('focus',refocus);document.addEventListener('visibilitychange',refocus);
             const deepLink = new URL(window.parent.location.href);
-            if(!deepLink.searchParams.has('lightos'))this.app.ready$.subscribe(()=>this.zone.run(()=>openConnectionHub(this.app)));
+            this.app.ready$.subscribe(()=>this.zone.run(async()=>{
+                try{
+                    const target=window.TabbyWebShellEntry.target(deepLink);
+                    if(!target){openConnectionHub(this.app);return;}
+                    const selected=await window.TabbyWebShellEntry.resolve(target,instances,()=>requestJSON('/lightos/api/client-instances'));
+                    const params=await this.profiles.newTabParametersForProfile(selected.kind==='client'?clientProfile(selected.item):profile(selected.item));
+                    if(!params)throw Error('Tabby 无法打开该 LightOS 终端');
+                    this.zone.run(()=>this.app.openNewTab(params));
+                    for(const key of ['target','name','lightos','owner'])deepLink.searchParams.delete(key);
+                    window.parent.history.replaceState(null,'',deepLink.href);
+                }catch(e){
+                    this.zone.run(()=>{const hub=openConnectionHub(this.app);if(hub)hub.entryError=e.message;});
+                }
+            }));
             window.TabbySidebar.installHandle(window.parent.document,window.parent.localStorage);
-            if (deepLink.searchParams.has('lightos')) {
-                setTimeout(()=>instances().then(items=>{
-                    const i=items.find(i=>i.name===deepLink.searchParams.get('lightos') && (!deepLink.searchParams.get('owner')||i.owner_deploy_id===deepLink.searchParams.get('owner')));
-                    if(i) this.profiles.openNewTabForProfile(profile(i));
-                }), 1000);
-                deepLink.searchParams.delete('lightos');deepLink.searchParams.delete('owner');
-                window.parent.history.replaceState(null,'',deepLink.href);
-            }
             window.addEventListener('message', event => {
                 if (event.origin !== location.origin || !event.data || event.data.type !== 'tabby-lightos-open') return;
                 const source = Array.from(document.querySelectorAll('lightos-manager-tab iframe')).some(f => f.contentWindow === event.source);

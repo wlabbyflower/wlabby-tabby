@@ -18,7 +18,7 @@ patterns = {
     'fixed device domain': r'\b[A-Za-z0-9][A-Za-z0-9.-]*\.heiyu\.space\b',
     'private LAN IP': r'\b(?:192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b',
 }
-files = [*content.rglob('*'), root/'package.yml', root/'lzc-manifest.yml', *list((root/'lpk').rglob('*.py'))]
+files = [*(root/'resources').rglob('*'), *content.rglob('*'), root/'package.yml', root/'lzc-manifest.yml', *list((root/'lpk').rglob('*.py'))]
 errors = []
 for path in files:
     if not path.is_file():
@@ -43,7 +43,7 @@ if (content/'tabby-lightos/dist/gateway-defaults.js').read_text() not in entry.r
     errors.append('Plugin gateway defaults source is out of sync')
 if (content/'tabby-lightos/dist/terminal-actions.js').read_text() not in entry.read_text():
     errors.append('Plugin terminal actions source is out of sync')
-for name in ('sidebar-toggle.js', 'credential-storage.js', 'connection-ui.js'):
+for name in ('sidebar-toggle.js', 'credential-storage.js', 'connection-ui.js', 'terminal-scroll.js', 'webshell-entry.js'):
     if (content/'tabby-lightos/dist'/name).read_text() not in entry.read_text():
         errors.append('Plugin helper is out of sync: ' + name)
 if errors:

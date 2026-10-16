@@ -1,5 +1,5 @@
 package: cloud.lazycat.app.tabbyweb
-version: 0.6.2
+version: 0.6.3
 name: Tabby Web
 description: Tabby 终端 / SSH 客户端的浏览器版本，自带自托管连接网关
 author: "Eugeny / Lazy Cat 社区移植"

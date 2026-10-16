@@ -43,6 +43,15 @@ class ManagerTest(unittest.TestCase):
             self.assertEqual(self.request('/api/instances', role='NORMAL')[0], 403)
             call.assert_not_called()
 
+    def test_native_manager_entry_is_dynamic_and_admin_only(self):
+        with patch.object(m.clients, 'admin_info', return_value={'base_url': 'https://lightos.example.test/?token=discard-this-value'}) as info:
+            self.assertEqual(self.request('/api/admin-info', role='NORMAL')[0], 403)
+            info.assert_not_called()
+            self.assertEqual(self.request('/api/admin-info'), (200, {'home_url': 'https://lightos.example.test/?view=home'}))
+        for value in ('javascript:alert(1)', 'https://user:password@lightos.example.test/', '/relative', 'https://lightos.example.test/\r\n'):
+            with patch.object(m.clients, 'admin_info', return_value={'base_url': value}):
+                self.assertEqual(self.request('/api/admin-info')[0], 502)
+
     def test_host_entry_does_not_require_ssh_and_ticket_is_admin_only(self):
         with patch.dict(m.os.environ, {'LAZYCAT_BOX_DOMAIN': '', 'HOST_TERMINAL_SECRET': 'synthetic-terminal-key-for-tests-only'}):
             self.assertEqual(self.request('/api/local-terminal')[0], 200)

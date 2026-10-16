@@ -6,7 +6,7 @@ usage: |
 
   连接首页有三个入口：
   - LZC OS 本机：连接当前微服。仅管理员可用，不需要开启 SSHD 或输入 SSH 密码。
-  - LightOS 实例：选择服务端实例或已接入的客户端实例打开终端，也可以进入实例管理。
+  - LightOS 实例：选择服务端实例或已接入的客户端实例打开终端，部署和启停请打开 LightOS 原生管理。
   - 其他 SSH 设备：填写地址、端口、用户名和密码，保存后连接。密码可留空，在连接时再输入。
 
   新建 SSH 时填写的密码会加密保存。留空时，在连接提示中输入并勾选“记住”。
@@ -23,7 +23,7 @@ application:
   subdomain: tabby
   entries:
     - id: lightos
-      title: LightOS 管理
+      title: LightOS 管理入口
       path: /lightos/
 
   # 微服 OIDC 的回调地址。social_django 在 tabby/urls.py 里挂在

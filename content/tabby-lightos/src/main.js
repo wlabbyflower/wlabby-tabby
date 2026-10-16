@@ -221,11 +221,12 @@
                 const text=tab.frontend&&tab.frontend.getSelection();if(!text)return;
                 event.preventDefault();event.clipboardData.setData('text/plain',text);
             };
+            const scrollCleanup=window.TabbyTerminalScroll.install(tab);
             const host=tab.content&&tab.content.nativeElement;
             const context=event=>{event.preventDefault();event.stopImmediatePropagation();zone.run(()=>tab.buildContextMenu().then(items=>platform.popupContextMenu(items,event)));};
             if(host)host.addEventListener('contextmenu',context,true);
             document.addEventListener('paste',paste,true);document.addEventListener('copy',copy,true);
-            tab.__clipboardCleanup=()=>{window.removeEventListener('keydown',keyboardPaste,true);if(host)host.removeEventListener('contextmenu',context,true);document.removeEventListener('paste',paste,true);document.removeEventListener('copy',copy,true);};
+            tab.__clipboardCleanup=()=>{scrollCleanup();window.removeEventListener('keydown',keyboardPaste,true);if(host)host.removeEventListener('contextmenu',context,true);document.removeEventListener('paste',paste,true);document.removeEventListener('copy',copy,true);};
         }
         detach(tab){if(tab.__clipboardCleanup)tab.__clipboardCleanup();super.detach(tab);}
     }
@@ -250,16 +251,21 @@
             const refocus=()=>{if(!document.hidden&&!document.querySelector('ngb-modal-window, .modal.show, input:focus')&&this.app.activeTab&&this.app.activeTab.emitFocused)this.app.activeTab.emitFocused();};
             window.addEventListener('focus',refocus);document.addEventListener('visibilitychange',refocus);
             const deepLink = new URL(window.parent.location.href);
-            if(!deepLink.searchParams.has('lightos'))this.app.ready$.subscribe(()=>this.zone.run(()=>openConnectionHub(this.app)));
+            this.app.ready$.subscribe(()=>this.zone.run(async()=>{
+                try{
+                    const target=window.TabbyWebShellEntry.target(deepLink);
+                    if(!target){openConnectionHub(this.app);return;}
+                    const selected=await window.TabbyWebShellEntry.resolve(target,instances,()=>requestJSON('/lightos/api/client-instances'));
+                    const params=await this.profiles.newTabParametersForProfile(selected.kind==='client'?clientProfile(selected.item):profile(selected.item));
+                    if(!params)throw Error('Tabby 无法打开该 LightOS 终端');
+                    this.zone.run(()=>this.app.openNewTab(params));
+                    for(const key of ['target','name','lightos','owner'])deepLink.searchParams.delete(key);
+                    window.parent.history.replaceState(null,'',deepLink.href);
+                }catch(e){
+                    this.zone.run(()=>{const hub=openConnectionHub(this.app);if(hub)hub.entryError=e.message;});
+                }
+            }));
             window.TabbySidebar.installHandle(window.parent.document,window.parent.localStorage);
-            if (deepLink.searchParams.has('lightos')) {
-                setTimeout(()=>instances().then(items=>{
-                    const i=items.find(i=>i.name===deepLink.searchParams.get('lightos') && (!deepLink.searchParams.get('owner')||i.owner_deploy_id===deepLink.searchParams.get('owner')));
-                    if(i) this.profiles.openNewTabForProfile(profile(i));
-                }), 1000);
-                deepLink.searchParams.delete('lightos');deepLink.searchParams.delete('owner');
-                window.parent.history.replaceState(null,'',deepLink.href);
-            }
             window.addEventListener('message', event => {
                 if (event.origin !== location.origin || !event.data || event.data.type !== 'tabby-lightos-open') return;
                 const source = Array.from(document.querySelectorAll('lightos-manager-tab iframe')).some(f => f.contentWindow === event.source);

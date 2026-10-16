@@ -70,7 +70,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, Path(__file__).with_name('lightos.html').read_bytes(), html=True)
             return
         try:
-            if self.path == '/api/local-terminal':
+            if self.path == '/api/admin-info':
+                self.send(200, {'home_url': clients.admin_home()})
+            elif self.path == '/api/local-terminal':
                 self.send(200, {'mode': 'host-terminal', 'user': 'root'})
             elif self.path == '/api/local-host':
                 host = os.environ.get('LAZYCAT_BOX_DOMAIN', '').strip().rstrip('.')
