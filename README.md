@@ -2,7 +2,7 @@
 
 基于 [Eugeny](https://github.com/Eugeny) 创建的 [Tabby Web](https://github.com/Eugeny/tabby-web) 的懒猫微服适配项目，集成 LZC OS、LightOS 与 SSH 终端。终端与 Web 服务的基础能力来自原项目，本仓库维护懒猫微服适配和相关功能扩展。
 
-版本 `0.6.4`，应用 ID `cloud.lazycat.app.tabbyweb`。标准 LPK v2 应用：Tabby 原生终端标签、当前微服本机终端、LightOS 实例管理，以及其他设备的 SSH 连接。
+版本 `0.6.5`，应用 ID `cloud.lazycat.app.tabbyweb`。标准 LPK v2 应用：Tabby 原生终端标签、当前微服本机终端、LightOS 实例管理，以及其他设备的 SSH 连接。
 
 仅支持桌面客户端（Windows、macOS、Linux）；包声明不支持 Android、iOS（含 iPad）和 tvOS 智慧屏。
 
@@ -163,3 +163,19 @@ https://github.com/wlabbyflower/wlabby-tabby
 - [懒猫微服开发者文档](https://gitee.com/lazycatcloud/lzc-developer-doc)及 [LZC SDK](https://gitee.com/linakesi/lzc-sdk)：提供应用打包、系统能力接入和设备授权支持。
 
 本仓库由 [wlabbyflower](https://github.com/wlabbyflower) 维护适配与扩展，主要包括 OIDC 登录接入、LZC OS 与 LightOS 终端入口、凭据持久化、连接状态检测及交互改进。原项目及相关依赖的版权与许可证归各自权利人所有；Tabby Web 的许可证见[上游 MIT License](https://github.com/Eugeny/tabby-web/blob/master/LICENSE)。欢迎到原仓库了解项目、反馈问题并支持原作者。
+
+
+生产启动回归测试见 `tests/test_manager_process.py`，需在隔离的随包 Python 3.7 镜像中提供虚构 `lightosctl` 并设置 `TABBY_MANAGER_FIXTURE=1`。测试从真实管理服务入口启动 HTTP 与 WebSocket，验证文件助手子进程、重复上传下载和取消清理。
+
+在项目根目录执行生产启动回归（仅启动隔离测试容器，不安装应用）：
+
+```bash
+docker run --rm -e TABBY_MANAGER_FIXTURE=1 \
+  -v "$(pwd)/tests/fixtures/lightosctl.py:/lzcinit/lightosctl:ro" \
+  -v "$(pwd):/workspace:ro" -w /workspace \
+  --entrypoint python \
+  registry.lazycat.cloud/abby/eugeny/tabby-connection-gateway:d9737cecff2904db \
+  -m unittest discover -s tests -p test_manager_process.py
+```
+
+先按前文构建原生助手，测试不使用真实实例或设备凭据。

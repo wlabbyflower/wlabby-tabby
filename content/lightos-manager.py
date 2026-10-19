@@ -163,9 +163,22 @@ class Handler(BaseHTTPRequestHandler):
             self.send(502, {'error': str(exc)})
 
 
-if __name__ == '__main__':
+def run():
     spec = importlib.util.spec_from_file_location('lightos_terminal', Path(__file__).with_name('lightos-terminal.py'))
     terminal = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(terminal)
-    threading.Thread(target=terminal.run, daemon=True).start()
-    ThreadingHTTPServer(('127.0.0.1', 9001), Handler).serve_forever()
+    server = ThreadingHTTPServer(('127.0.0.1', 9001), Handler)
+    http_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    http_thread.start()
+    try:
+        # Python 3.7's Unix child watcher attaches to the main-thread event loop.
+        # Keep subprocess-owning WebSockets here; HTTP handlers need no asyncio.
+        terminal.run()
+    finally:
+        server.shutdown()
+        server.server_close()
+        http_thread.join(timeout=5)
+
+
+if __name__ == '__main__':
+    run()
