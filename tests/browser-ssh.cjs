@@ -2,7 +2,7 @@
 const assert=require('node:assert/strict');
 const {execFileSync}=require('node:child_process');
 const {generateKeyPairSync}=require('node:crypto');
-const {Server}=require(process.env.SSH2_MODULE||'ssh2');
+const {Server,utils}=require(process.env.SSH2_MODULE||'ssh2');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const base=process.env.TEST_BASE_URL||'http://127.0.0.1:28084';
 const container=process.env.TEST_CONTAINER||'tabby-061-ui-test';
@@ -25,6 +25,13 @@ const server=new Server({algorithms:{kex:['ecdh-sha2-nistp256']},hostKeys:[gener
  client.on('authentication',ctx=>{if(ctx.method==='password'&&ctx.username==='tester'&&ctx.password==='synthetic-ssh-password'){authCount++;ctx.accept();}else ctx.reject(['password']);});
  client.on('ready',()=>client.on('session',accept=>{
   const session=accept();session.on('pty',(accept)=>accept&&accept());session.on('env',(accept)=>accept&&accept());
+  session.on('sftp',accept=>{const sftp=accept();let read=false;const status=utils.sftp.STATUS_CODE;
+   sftp.on('REALPATH',(id)=>sftp.name(id,[{filename:'/',longname:'/',attrs:{}}]));
+   sftp.on('STAT',(id)=>sftp.attrs(id,{mode:0o40755,size:0,uid:0,gid:0,atime:0,mtime:0}));
+   sftp.on('OPENDIR',(id)=>{read=false;sftp.handle(id,Buffer.from([1]));});
+   sftp.on('READDIR',(id)=>{if(read)sftp.status(id,status.EOF);else{read=true;sftp.name(id,[{filename:'fixture-from-sftp.txt',longname:'fixture-from-sftp.txt',attrs:{mode:0o100644,size:3,uid:0,gid:0,atime:0,mtime:0}}]);}});
+   sftp.on('CLOSE',id=>sftp.status(id,status.OK));
+  });
   session.on('shell',accept=>{const stream=accept();stream.write('SSH fixture ready\r\n$ ');stream.on('data',data=>{input.push(data.toString());stream.write(data);});});
  }));
 });
@@ -44,7 +51,7 @@ const server=new Server({algorithms:{kex:['ecdh-sha2-nistp256']},hostKeys:[gener
    remote.onerror=()=>{};remote.onclose=()=>{remotes.delete(remote);try{route.close();}catch(_){}};
    route.onMessage(m=>{if(remote.readyState===1)remote.send(m);else queued.push(m);});route.onClose(()=>remote.close());
   });
-  async function open(){await page.goto(base);const f=page.frameLocator('iframe').first();try{await f.locator('tabby-connection-hub h1').waitFor();}catch(e){console.error('OPEN_STATE',await page.locator('body').innerText(),{frames:page.frames().map(f=>f.url()),errors});for(const f of page.frames())console.error('FRAME_STATE',f.url(),(await f.locator('body').innerText()).slice(0,2500));throw e;}const frame=page.frames().find(f=>f.url().endsWith('/terminal'));await frame.evaluate(()=>{window.__testWrites=[];const p=window.require('tabby-terminal').BaseTerminalTabComponent.prototype,original=p.write;p.write=function(value,...args){window.__testWrites.push(String(value));return original.call(this,value,...args);};});if(authCount===0){
+  async function open(){await page.goto(base);const f=page.frameLocator('iframe').first();try{await f.locator('tabby-connection-hub h1').waitFor();}catch(e){console.error('OPEN_STATE',await page.locator('body').innerText(),{frames:page.frames().map(f=>f.url()),errors});for(const f of page.frames())console.error('FRAME_STATE',f.url(),(await f.locator('body').innerText()).slice(0,2500));throw e;}const frame=page.frames().find(f=>f.url().endsWith('/terminal'));await frame.evaluate(()=>{window.__testWrites=[];const p=window.require('tabby-terminal').BaseTerminalTabComponent.prototype,original=p.write;p.write=function(value,...args){window.__testSSHTab=this;window.__testWrites.push(String(value));return original.call(this,value,...args);};});if(authCount===0){
     await frame.getByRole('button',{name:'新建 SSH 连接',exact:true}).click();const form=frame.locator('lightos-new-ssh');
     await form.getByPlaceholder('设备 IP 或主机名').fill('127.0.0.1');await form.locator('input[type=number]').fill('22223');await form.getByPlaceholder('设备用户名').fill('tester');
     await form.locator('input[autocomplete=new-password]').fill('synthetic-ssh-password');await form.getByPlaceholder('可选',{exact:true}).fill('SSH form fixture');
@@ -79,8 +86,34 @@ const server=new Server({algorithms:{kex:['ecdh-sha2-nistp256']},hostKeys:[gener
   frame=await open();await frame.locator('ssh-tab .tabby-connection-status[data-state=connected]').waitFor({timeout:20000});assert.equal(authCount,3);assert.equal(await frame.locator('input[type=password]').count(),0);
   await frame.locator('ssh-tab .tabby-connection-status').getByRole('button',{name:'断开连接',exact:true}).click();await frame.locator('ssh-tab .tabby-connection-status[data-state=disconnected]').waitFor();
   await frame.locator('ssh-tab .tabby-connection-status').getByRole('button',{name:'重新连接',exact:true}).click();await frame.locator('ssh-tab .tabby-connection-status[data-state=connected]').waitFor();assert.equal(await frame.locator('input[type=password]').count(),0);
+  assert.equal(authCount,4,'manual reconnect must perform a fresh SSH authentication');
+  // Repeated remote closes must reconnect to a usable new shell each time.
+  for(let attempt=0;attempt<3;attempt++){
+    const previous=authCount;
+    for(const socket of sockets)socket.end();
+    try{await frame.locator('ssh-tab .tabby-connection-status[data-state=disconnected]').waitFor({timeout:20000});}catch(e){console.log('DROP_DEBUG',{attempt,authCount,sockets:sockets.size,state:await frame.evaluate(()=>{const t=window.__testSSHTab,s=t&&t.sshSession,c=s&&s.ssh&&s.ssh._sock;return {shellOpen:t&&t.session&&t.session.open,transportOpen:s&&s.open,closing:s&&s.__tabbyClosing,socketKeys:c&&Object.keys(c),socketDestroyed:c&&c.destroyed,socketEnded:c&&c.readableEnded,webSocket:c&&c.socket&&c.socket.webSocket&&c.socket.webSocket.readyState};}),errors,writes:await frame.evaluate(()=>window.__testWrites),body:await frame.locator('body').innerText()});throw e;}
+    await frame.locator('ssh-tab .tabby-connection-status').getByRole('button',{name:'重新连接',exact:true}).click();
+    await frame.locator('ssh-tab .tabby-connection-status[data-state=connected]').waitFor({timeout:20000});
+    assert.equal(authCount,previous+1,'reconnect reused a dead transport');
+    const text='RECONNECT_LIVE_'+attempt;
+    await page.evaluate(text=>navigator.clipboard.writeText(text),text);await frame.locator('ssh-tab .xterm').click();await page.keyboard.press('Control+v');await page.waitForTimeout(150);
+    assert.equal(input.join('').split(text).length-1,1,'new shell must accept input exactly once');
+  }
+  // Network gateway loss, then two immediate clicks through the native toolbar.
+  for(const remote of remotes)remote.close();
+  await frame.locator('ssh-tab .tabby-connection-status[data-state=disconnected]').waitFor({timeout:20000});
+  const beforeRapid=authCount;
+  await frame.getByText('Reconnect',{exact:true}).evaluate(label=>{const button=label.closest('button');button.click();button.click();});
+  await frame.locator('ssh-tab .tabby-connection-status[data-state=connected]').waitFor({timeout:20000});
+  await page.waitForTimeout(200);assert.equal(authCount,beforeRapid+1,'rapid reconnect clicks must produce only one new transport');
+  await frame.getByText('SFTP',{exact:true}).click();await frame.locator('sftp-panel').getByText('fixture-from-sftp.txt',{exact:true}).waitFor();
+  const beforePanelReconnect=authCount;
+  await frame.getByText('Reconnect',{exact:true}).evaluate(label=>label.closest('button').click());
+  await frame.locator('ssh-tab .tabby-connection-status[data-state=connected]').waitFor({timeout:20000});
+  await frame.locator('sftp-panel').waitFor({state:'hidden'});assert.equal(authCount,beforePanelReconnect+1,'open SFTP panel must not pin reconnect to the old transport');
+  await frame.getByText('SFTP',{exact:true}).click();await frame.locator('sftp-panel').getByText('fixture-from-sftp.txt',{exact:true}).waitFor();
   assert.deepEqual(errors,[]);
-  console.log('Native SSH passed: new connection password field, show/hide, no plaintext in profile, no password re-prompt, real SSH handshake, encrypted credential save, reload and backend restart without password prompts, paste once, disconnect/reconnect.');
+  console.log('Native SSH passed: new connection password field, show/hide, no plaintext in profile, no password re-prompt, real SSH handshake, encrypted credential save, reload and backend restart without password prompts, paste once, repeated remote closes, gateway loss, rapid native reconnect and SFTP after reconnect.');
  }finally{
   await browser.close();for(const remote of remotes)remote.close();for(const socket of sockets)socket.end();server.close();
  }

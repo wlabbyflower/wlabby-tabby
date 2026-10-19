@@ -22,6 +22,14 @@ class TicketTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             access.consume(ticket, 'https://device.example.test', used, now=102)
 
+    def test_terminal_and_file_capabilities_are_not_interchangeable(self):
+        for issued, consumed in [('files', 'terminal'), ('terminal', 'files')]:
+            ticket = access.issue('test-admin', 'device.example.test', now=100, purpose=issued)
+            with self.assertRaises(ValueError):
+                access.consume(ticket, 'https://device.example.test', {}, now=101, purpose=consumed)
+        ticket = access.issue('test-admin', 'device.example.test', now=100, purpose='files')
+        self.assertEqual(access.consume(ticket, 'https://device.example.test', {}, now=101, purpose='files'), 'test-admin')
+
     def test_expiry_tampering_origin_and_missing_key_are_rejected(self):
         ticket = access.issue('admin-test', 'device.example.test', now=100)
         for token, origin, now in [(ticket, 'https://device.example.test', 146),

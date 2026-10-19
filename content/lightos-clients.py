@@ -124,8 +124,8 @@ def dial_info(headers, identifier):
     return {'base': base, 'ticket': value, 'token': token}
 
 
-def device_url(info, path, **query):
-    return info['base'] + path + '?' + urlencode(dict(query, ticket=info['ticket']))
+def device_url(info, route, **query):
+    return info['base'] + route + '?' + urlencode(dict(query, ticket=info['ticket']))
 
 
 def workspace_pane(info):

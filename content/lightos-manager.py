@@ -114,6 +114,10 @@ class Handler(BaseHTTPRequestHandler):
                 clients.authorize(self.headers, identifier)
                 self.send(200, {'mode': 'native-client'})
                 return
+            if self.path == '/api/local-files-ticket':
+                ticket = access.issue(self.headers['X-HC-User-ID'], self.headers.get('Host', ''), purpose='files')
+                self.send(200, {'ticket': ticket})
+                return
             if self.path == '/api/local-terminal-ticket':
                 ticket = access.issue(self.headers['X-HC-User-ID'], self.headers.get('Host', ''))
                 self.send(200, {'ticket': ticket})

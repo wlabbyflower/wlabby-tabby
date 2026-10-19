@@ -1,12 +1,15 @@
     class ConnectionStatusDecorator extends terminal.TerminalDecorator {
-        constructor(zone){super();this.zone=zone;}
+        constructor(zone,modal){super();this.zone=zone;this.modal=modal;}
         attach(tab){
             if(!tab.profile||!['ssh','lightos'].includes(tab.profile.type))return;
+            const reconnectCleanup=window.TabbySSHReconnect.install(tab);
             const target=tab.element&&tab.element.nativeElement;if(!target)return;
             const banner=document.createElement('div'),text=document.createElement('span'),button=document.createElement('button');
             banner.className='tabby-connection-status';banner.setAttribute('role','status');banner.style.cssText='flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:6px 12px;min-height:34px;background:#202936;color:#c3d0e1;font:12px/1.5 system-ui;';
             text.style.cssText='flex:1;overflow-wrap:anywhere';button.className='btn btn-sm btn-secondary';button.style.cssText='padding:1px 10px;font-size:12px;flex-shrink:0';
-            banner.append(text,button);target.insertBefore(banner,target.firstChild);
+            let fileButton=null;
+            if(tab.profile.type==='lightos'){fileButton=document.createElement('button');fileButton.className='btn btn-sm btn-secondary';fileButton.textContent='文件传输';fileButton.onclick=()=>openFiles(tab,this.modal,this.zone);}
+            banner.append(text);if(fileButton)banner.append(fileButton);banner.append(button);target.insertBefore(banner,target.firstChild);
             const toolbar=target.querySelector(':scope > terminal-toolbar'),pin=target.querySelector(':scope > .toolbar-pin-button');
             const oldToolbarTop=toolbar&&toolbar.style.top,oldPinTop=pin&&pin.style.top;
             const positionToolbar=()=>{const height=banner.getBoundingClientRect().height;if(toolbar)toolbar.style.top=height+'px';if(pin)pin.style.top=(height+5)+'px';};
@@ -57,7 +60,7 @@
             const online=()=>{if(!navigator.onLine&&(!tab.session||!tab.session.open))set('disconnected','网络已断开，请恢复网络后重新连接');};
             window.addEventListener('offline',online);
             this.subscribeUntilDetached(tab,tab.sessionChanged$.subscribe(update));
-            tab.__statusCleanup=()=>{stopped=true;clearInterval(timer);window.removeEventListener('offline',online);button.removeEventListener('click',click);if(observer)observer.disconnect();if(toolbar)toolbar.style.top=oldToolbarTop;if(pin)pin.style.top=oldPinTop;banner.remove();restorers.reverse().forEach(f=>f());};
+            tab.__statusCleanup=()=>{stopped=true;clearInterval(timer);window.removeEventListener('offline',online);button.removeEventListener('click',click);if(observer)observer.disconnect();if(toolbar)toolbar.style.top=oldToolbarTop;if(pin)pin.style.top=oldPinTop;if(fileButton)fileButton.onclick=null;banner.remove();restorers.reverse().forEach(f=>f());reconnectCleanup();};
         }
         detach(tab){if(tab.__statusCleanup)tab.__statusCleanup();super.detach(tab);}
     }

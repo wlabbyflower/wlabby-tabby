@@ -35,6 +35,10 @@ class Protocol(gateway.DiagnosticProtocol):
             return HTTPStatus.FORBIDDEN, [], b'Cross-origin terminal rejected'
 
 
+spec = importlib.util.spec_from_file_location('file_transport', HERE + '/file-transport.py')
+files = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(files)
+
 sessions = {}
 
 
@@ -61,6 +65,13 @@ async def terminal(ws, path=None, command=None, user=None):
     try:
         if command is None:
             query = parse_qs(urlsplit(path).query)
+            if query.get('files') == ['1']:
+                if 'client' in query:
+                    await files.client_channel(ws, manager.clients, ws.request_headers, query['client'][0])
+                else:
+                    args, binary = await loop.run_in_executor(None, files.instance_command, manager, query.get('name', [''])[0], query.get('owner', [''])[0])
+                    await files.process_channel(ws, args, binary)
+                return
             if 'client' in query:
                 await manager.clients.terminal(ws, ws.request_headers, query['client'][0])
                 return
@@ -157,7 +168,7 @@ async def terminal(ws, path=None, command=None, user=None):
 
 async def serve():
     async with websockets.serve(terminal, '127.0.0.1', 9002, create_protocol=Protocol,
-                                max_size=65536, max_queue=8, ping_interval=20, ping_timeout=20):
+                                max_size=256*1024, max_queue=8, ping_interval=20, ping_timeout=20):
         await asyncio.Future()
 
 

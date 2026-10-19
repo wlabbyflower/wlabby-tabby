@@ -16,6 +16,8 @@ usage: |
 
   左侧栏边缘的箭头可以收起、展开侧栏，顶部也保留了侧栏开关。
   终端右键可以复制、粘贴、重新连接、断开连接。
+  本机和 LightOS 终端可点击状态栏“文件传输”，SSH 设备使用 SFTP。
+  客户端上传保存在客户端提供的临时目录，完成后显示路径。
   连接中断后点击“重新连接”。升级应用会中断现有终端，请先保存工作。
 
 application:
@@ -68,6 +70,34 @@ application:
     timeout: 5s
 
   injects:
+    - id: lazycat-file-bridge
+      on: request
+      when:
+        - /__lazycat_file_bridge/*
+      do:
+        - src: |
+            const requestHost = String(ctx.request.host || "").split(":")[0].toLowerCase();
+            const firstDot = requestHost.indexOf(".");
+            const method = String(ctx.request.method || "").toUpperCase();
+            if (firstDot <= 0 || !requestHost.endsWith(".heiyu.space") || !["GET", "HEAD", "PUT"].includes(method)) {
+              ctx.response.send(["GET", "HEAD", "PUT"].includes(method) ? 400 : 405, "Invalid file bridge request");
+              return;
+            }
+            ctx.headers.del("Origin");
+            ctx.headers.del("Referer");
+            ctx.proxy.to("https://file." + requestHost.slice(firstDot + 1), {
+              path: "/files/home" + ctx.request.path.slice("/__lazycat_file_bridge".length),
+              query: ctx.request.raw_query,
+              use_target_host: true,
+              timeout_ms: 120000,
+              on_fail: "error"
+            });
+    - id: lazycat-file-chooser
+      on: browser
+      when:
+        - /*
+      do:
+        - src: file:///lzcapp/pkg/content/lazycat-injects/lzc-file-chooser-inject.js
     # 双重兜底：前端选择器与 Django middleware 已提供同源网关默认值。
     # 免配置连接网关：给 /api/1/user 的响应补上 custom_connection_gateway。
     # 用 ctx.request.host 现算域名，不把域名写死进用户配置（微服域名重启后可能变）。

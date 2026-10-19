@@ -26,7 +26,7 @@ for path in files:
     if path.suffix in ('.pem', '.key', '.sqlite', '.db', '.pyc') or path.name.startswith('.env'):
         errors.append(str(path.relative_to(root)) + ': unexpected secret/runtime file')
         continue
-    if path.parent == content/'client-auth-token':
+    if path.parent in (content/'client-auth-token', content/'file-worker'):
         if path.name not in ('amd64', 'arm64') or not path.read_bytes().startswith(b'\x7fELF'):
             errors.append(str(path.relative_to(root)) + ': unexpected native helper')
         text = path.read_bytes().decode('utf-8', 'ignore')
@@ -43,7 +43,7 @@ if (content/'tabby-lightos/dist/gateway-defaults.js').read_text() not in entry.r
     errors.append('Plugin gateway defaults source is out of sync')
 if (content/'tabby-lightos/dist/terminal-actions.js').read_text() not in entry.read_text():
     errors.append('Plugin terminal actions source is out of sync')
-for name in ('sidebar-toggle.js', 'credential-storage.js', 'connection-ui.js', 'terminal-scroll.js', 'webshell-entry.js'):
+for name in ('sidebar-toggle.js', 'credential-storage.js', 'connection-ui.js', 'terminal-scroll.js', 'webshell-entry.js', 'ssh-reconnect.js', 'file-channel.js'):
     if (content/'tabby-lightos/dist'/name).read_text() not in entry.read_text():
         errors.append('Plugin helper is out of sync: ' + name)
 if errors:

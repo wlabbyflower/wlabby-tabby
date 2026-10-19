@@ -62,6 +62,15 @@ class ManagerTest(unittest.TestCase):
             origin = self.url
             self.assertEqual(m.access.consume(data['ticket'], origin, {}), 'test-admin')
 
+    def test_files_ticket_requires_administrator_and_has_file_scope(self):
+        with patch.dict(m.os.environ, {'HOST_TERMINAL_SECRET': 'synthetic-file-key-for-tests-only'}):
+            self.assertEqual(self.request('/api/local-files-ticket', {}, role='NORMAL')[0], 403)
+            status, result = self.request('/api/local-files-ticket', {})
+            self.assertEqual(status, 200)
+            self.assertEqual(m.access.consume(result['ticket'], self.url, {}, purpose='files'), 'test-admin')
+            with self.assertRaises(ValueError):
+                m.access.consume(result['ticket'], self.url, {})
+
     def test_client_list_and_terminal_are_admin_only(self):
         with patch.object(m.clients, 'list_clients') as call:
             self.assertEqual(self.request('/api/client-instances', role='NORMAL')[0], 403)

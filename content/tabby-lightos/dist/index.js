@@ -252,10 +252,123 @@
     const api={target,resolve};if(typeof module==='object'&&module.exports)module.exports=api;root.TabbyWebShellEntry=api;
 })(typeof window==='undefined'?globalThis:window);
 
+/* Reconnect a tab with a fresh transport, without closing other shared tabs. */
+(function(root){
+    function live(session){const ws=session&&session.ssh&&session.ssh._sock&&session.ssh._sock.socket&&session.ssh._sock.socket.webSocket;return !!((!ws||ws.readyState===1)&&session&&session.open&&!session.__tabbyClosing&&!(session.willDestroy$&&session.willDestroy$.isStopped)&&!(session.ssh&&session.ssh._sock&&session.ssh._sock.destroyed));}
+    function protect(session){
+        if(!session||session.__tabbyDestroyProtected)return;
+        session.__tabbyDestroyProtected=true;
+        const destroy=session.destroy;
+        session.destroy=function(...args){if(this.__tabbyClosing)return;this.__tabbyClosing=true;this.open=false;return destroy.apply(this,args);};
+        // The browser net shim completes its data observable on close, but never
+        // emits stream EOF/close. Explicitly close SSH and all child channels.
+        const socket=session.ssh&&session.ssh._sock&&session.ssh._sock.socket;
+        if(socket&&socket.close$)socket.close$.subscribe(()=>session.destroy());
+        if(socket&&socket.webSocket&&socket.webSocket.readyState>1)session.destroy();
+    }
+    function protectMultiplexer(mux){
+        if(mux.__tabbyReconnectFixed)return;mux.__tabbyReconnectFixed=true;
+        const get=mux.getSession;
+        mux.getSession=async function(profile){const session=await get.call(this,profile);return live(session)?session:null;};
+        mux.addSession=async function(session){
+            protect(session);const key=await this.getMultiplexerKey(session.profile);
+            if(!live(session))return;
+            this.sessions.set(key,session);
+            session.willDestroy$.subscribe(()=>{if(this.sessions.get(key)===session)this.sessions.delete(key);});
+        };
+    }
+    function install(tab){
+        if(!tab.profile||tab.profile.type!=='ssh'||!tab.sshMultiplexer)return ()=>{};
+        protectMultiplexer(tab.sshMultiplexer);
+        const originals={setupOneSession:tab.setupOneSession,initializeSession:tab.initializeSession,reconnect:tab.reconnect,disconnect:tab.disconnect};
+        let fresh=false,depth=0,initializing=null,reconnecting=null,disposed=false;
+        tab.setupOneSession=async function(injector,profile,...args){
+            let selected=profile;
+            if(fresh&&depth===0){
+                selected=Object.create(profile);
+                const options=Object.create(profile.options);Object.defineProperty(options,'reuseSession',{value:false,enumerable:true});
+                Object.defineProperty(selected,'options',{value:options,enumerable:true});
+            }
+            depth++;
+            try{const session=await originals.setupOneSession.call(this,injector,selected,...args);protect(session);if(disposed){await session.destroy();throw Error('终端已关闭');}if(!live(session))throw Error('SSH 连接未建立，请检查终端中的认证或网关提示');return session;}
+            finally{depth--;}
+        };
+        tab.initializeSession=function(...args){
+            if(initializing)return initializing;
+            initializing=Promise.resolve().then(()=>originals.initializeSession.apply(this,args)).catch(e=>{this.connectionError=e.message;this.write('\r\nSSH: '+e.message+'\r\n');}).finally(()=>{initializing=null;});
+            return initializing;
+        };
+        const disconnect=async function(){
+            this.reconnectOffered=false;this.recentInputs='';this.sftpPanelVisible=false;
+            const shell=this.session;
+            this.setSession(null);
+            this.sshSession=null;
+            if(shell&&!shell.__tabbyClosed){shell.__tabbyClosed=true;await shell.destroy();}
+        };
+        tab.disconnect=disconnect;
+        tab.reconnect=function(){
+            if(reconnecting)return reconnecting;
+            reconnecting=(async()=>{
+                if(initializing)await initializing;
+                if(disposed)return;
+                await this.disconnect();this.connectionError=null;fresh=true;
+                try{await this.initializeSession();if(disposed){await disconnect.call(this);return;}if(this.session){this.session.releaseInitialDataBuffer();this.session.resize(this.size.columns,this.size.rows);}if(this.frontend)this.frontend.focus();}
+                finally{fresh=false;}
+            })().finally(()=>{reconnecting=null;});
+            return reconnecting;
+        };
+        return ()=>{disposed=true;for(const [name,value] of Object.entries(originals)){if(value)tab[name]=value;else delete tab[name];}};
+    }
+    const api={install,live,protectMultiplexer};if(typeof module==='object'&&module.exports)module.exports=api;root.TabbySSHReconnect=api;
+})(typeof window==='undefined'?globalThis:window);
+
+/* Chunked file requests on authenticated, independently closable WebSockets. */
+(function(root){
+    class Channel {
+        constructor(profile,request,options){this.profile=profile;this.request=request;this.options=options||{};this.pending=new Map();this.sequence=0;this.closed=false;}
+        async connect(){
+            if(this.connecting)return this.connecting;
+            this.connecting=(async()=>{
+                const o=this.profile.options;
+                const ticket=o.kind==='host'?(await this.request('/lightos/api/local-files-ticket',{})).ticket:null;
+                if(this.closed)throw Error('文件传输已关闭');
+                const u=new URL(ticket?'/lzc-terminal/':'/lightos-terminal/',this.options.location||root.location.href);u.protocol=u.protocol==='https:'?'wss:':'ws:';u.searchParams.set('files','1');
+                if(ticket)u.searchParams.set('ticket',ticket);else if(o.kind==='client')u.searchParams.set('client',o.id);else{u.searchParams.set('name',o.name);u.searchParams.set('owner',o.owner||'');}
+                return new Promise((resolve,reject)=>{
+                    const WS=this.options.WebSocket||root.WebSocket;this.ws=new WS(u.href);
+                    const timer=setTimeout(()=>{reject(Error('文件传输连接超时'));this.close();},65000);
+                    this.ws.onmessage=event=>{
+                        try{
+                            const data=JSON.parse(event.data);
+                            if(data.type==='files-ready'){clearTimeout(timer);this.ready=data;resolve(data);return;}
+                            const pending=this.pending.get(data.id);
+                            if(pending){this.pending.delete(data.id);clearTimeout(pending.timer);if(data.error)pending.reject(Error(data.error));else pending.resolve(data);}
+                            else if(data.error&&!this.ready){clearTimeout(timer);reject(Error(data.error));this.close();}
+                        }catch(_){reject(Error('文件传输响应无效'));this.close();}
+                    };
+                    this.ws.onerror=()=>{clearTimeout(timer);reject(Error('文件传输连接失败，请检查登录和设备状态'));this.close();};
+                    this.ws.onclose=()=>{clearTimeout(timer);reject(Error('文件传输连接已断开'));this.failPending();};
+                });
+            })();return this.connecting;
+        }
+        async call(action,fields){
+            await this.connect();if(this.closed||this.ws.readyState!==1)throw Error('文件传输已断开，请关闭窗口后重新打开');
+            const id=++this.sequence;
+            return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{this.pending.delete(id);reject(Error('文件操作超时，请重新打开文件传输'));this.close();},action==='upload-finish'?300000:65000);this.pending.set(id,{resolve,reject,timer});try{this.ws.send(JSON.stringify({id,action,...fields}));}catch(e){this.pending.delete(id);clearTimeout(timer);reject(e);}});
+        }
+        failPending(){for(const item of this.pending.values()){clearTimeout(item.timer);item.reject(Error('文件传输连接已断开'));}this.pending.clear();}
+        close(){this.closed=true;this.failPending();if(this.ws)this.ws.close();}
+    }
+    function encode(bytes){let s='';for(const b of bytes)s+=String.fromCharCode(b);return btoa(s);}
+    function decode(text){const s=atob(text),bytes=new Uint8Array(s.length);for(let i=0;i<s.length;i++)bytes[i]=s.charCodeAt(i);return bytes;}
+    const api={Channel,encode,decode};if(typeof module==='object'&&module.exports)module.exports=api;root.TabbyFileChannel=api;
+})(typeof window==='undefined'?globalThis:window);
+
 /* Tabby plugin: real terminal tabs sharing Tabby's renderer, shortcuts and tab bar. */
 (function () {
     const ng = require('@angular/core');
     const common = require('@angular/common');
+    const forms = require('@angular/forms');
     const core = require('tabby-core');
     const terminal = require('tabby-terminal');
     const Buffer = require('buffer').Buffer;
@@ -562,15 +675,91 @@
         return app.openNewTab({type:ConnectionHub,inputs:{title:'连接首页'}});
     }
 
+    class FileBrowser {
+        constructor(modal,zone){this.modal=modal;this.zone=zone;this.entries=[];this.path='/';this.pathInput='/';this.parent='/';this.error='';this.notice='';this.progress='';this.busy=false;this.capabilities={};this.alive=true;}
+        async ngOnInit(){
+            this.channel=new window.TabbyFileChannel.Channel(this.profile,requestJSON);
+            this.busy=true;
+            try{const ready=await this.channel.connect();this.zone.run(()=>{this.capabilities=ready.capabilities||{};});await this.navigate(ready.path||'/');}
+            catch(e){this.zone.run(()=>this.error=e.message);}finally{this.zone.run(()=>this.busy=false);}
+        }
+        ngOnDestroy(){this.alive=false;if(this.channel)this.channel.close();}
+        async run(fn){if(this.busy)return;this.busy=true;this.error='';this.notice='';try{await fn();}catch(e){this.zone.run(()=>this.error=e.message);}finally{this.zone.run(()=>{this.busy=false;this.progress='';});}}
+        async navigate(path){const result=await this.channel.call('list',{path});this.zone.run(()=>{this.path=result.path;this.pathInput=result.path;this.parent=result.parent||result.path;this.entries=result.entries||[];this.truncated=result.truncated;});}
+        join(name){if(!name||name==='.'||name==='..'||/[\x00/\\\r\n]/.test(name))throw Error('请输入有效的文件名');return this.path.replace(/\/$/,'')+'/'+name;}
+        async upload(event){
+            const files=Array.from(event.target.files||[]);event.target.value='';
+            await this.run(async()=>{
+                for(const file of files){
+                    if(file.size>2*1024**3)throw Error('单文件不能超过 2 GiB');
+                    const existing=this.entries.find(i=>i.name===file.name),overwrite=!!existing;
+                    if(overwrite&&!this.capabilities.staging&&!window.confirm('覆盖 '+file.name+'？'))continue;
+                    await this.channel.call('upload-start',{path:this.join(file.name),filename:file.name,size:file.size,overwrite});
+                    for(let offset=0;offset<file.size;offset+=65536){
+                        const bytes=new Uint8Array(await file.slice(offset,offset+65536).arrayBuffer());
+                        await this.channel.call('upload-chunk',{data:window.TabbyFileChannel.encode(bytes)});
+                        this.zone.run(()=>this.progress='上传 '+file.name+' · '+Math.round(Math.min(file.size,offset+bytes.length)/Math.max(1,file.size)*100)+'%');
+                    }
+                    this.zone.run(()=>this.progress='正在保存 '+file.name+'…');
+                    const result=await this.channel.call('upload-finish');
+                    if(this.capabilities.staging){this.zone.run(()=>this.notice='已保存到客户端：'+result.path);const parent=result.path.slice(0,result.path.lastIndexOf('/'))||'/';await this.navigate(parent);}
+                    else await this.navigate(this.path);
+                }
+            });
+        }
+        async download(item){
+            if(this.busy)return;
+            // Ask for a destination during the user gesture, before network awaits.
+            let picker=null;
+            try{if(window.showSaveFilePicker)picker=window.showSaveFilePicker({suggestedName:item.name});}
+            catch(e){this.error=e.message;return;}
+            await this.run(async()=>{
+                let writer=null,finished=false;
+                try{
+                    if(picker)writer=await(await picker).createWritable();
+                    const metadata=await this.channel.call('download-start',{path:item.path}),parts=[];let total=0;
+                    if(!writer&&metadata.size>128*1024*1024)throw Error('此浏览器下载超过 128 MiB 的文件需要支持保存文件接口，请使用桌面 Chrome 或 Edge');
+                    while(true){
+                        const result=await this.channel.call('download-chunk'),bytes=window.TabbyFileChannel.decode(result.data);
+                        total+=bytes.length;
+                        if(total>metadata.size)throw Error('下载期间文件大小发生变化，请重试');
+                        if(writer)await writer.write(bytes);else if(bytes.length)parts.push(bytes);
+                        this.zone.run(()=>this.progress='下载 '+item.name+' · '+Math.round(total/Math.max(1,metadata.size)*100)+'%');
+                        if(result.eof)break;
+                    }
+                    if(total!==metadata.size)throw Error('下载不完整，请重试');
+                    if(writer)await writer.close();else{const url=URL.createObjectURL(new Blob(parts));const a=document.createElement('a');a.href=url;a.download=metadata.name||item.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);}
+                    finished=true;
+                }finally{if(writer&&!finished)await writer.abort().catch(()=>{});if(!finished)this.channel.call('cancel').catch(()=>{});}
+            });
+        }
+        mkdir(){const name=window.prompt('新建目录名称');if(name)this.run(async()=>{await this.channel.call('mkdir',{path:this.join(name)});await this.navigate(this.path);});}
+        rename(item){const name=window.prompt('新名称',item.name);if(name&&name!==item.name)this.run(async()=>{await this.channel.call('rename',{path:item.path,destination:this.join(name)});await this.navigate(this.path);});}
+        remove(item){if(window.confirm('删除 '+item.name+'？目录必须为空。'))this.run(async()=>{await this.channel.call('remove',{path:item.path});await this.navigate(this.path);});}
+    }
+    FileBrowser.ctorParameters=()=>[{type:bootstrap.NgbActiveModal},{type:ng.NgZone}];
+    ng.Component({selector:'tabby-file-browser',styles:[`:host{display:block} .file-path{flex:1;min-width:180px} .file-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.file-table{max-height:52vh;overflow:auto}table{width:100%}th,td{padding:8px;border-bottom:1px solid #394454;overflow-wrap:anywhere}.file-name{color:#acd0ff;border:0;background:none;text-align:left}.file-error{color:#ffb6b6}.file-note{color:#aebacb}.file-actions{white-space:nowrap}`],template:`
+    <div class="modal-header"><h4>文件传输 · {{profile.name}}</h4><button class="close" (click)="modal.dismiss()" aria-label="关闭文件传输">×</button></div>
+    <div class="modal-body"><p *ngIf="capabilities.staging" class="file-note">客户端上传文件保存在客户端提供的临时目录，上传后显示实际路径。可浏览和下载当前账号能访问的文件。</p>
+    <form class="file-toolbar" (submit)="run(navigate.bind(this,pathInput));$event.preventDefault()"><input class="form-control file-path" aria-label="远程目录" [(ngModel)]="pathInput" name="path" [disabled]="busy"><button class="btn btn-secondary" [disabled]="busy">转到</button></form>
+    <div class="file-toolbar"><button class="btn btn-secondary" [disabled]="busy||parent===path" (click)="run(navigate.bind(this,parent))">上级目录</button><button class="btn btn-secondary" [disabled]="busy" (click)="run(navigate.bind(this,path))">刷新目录</button><button class="btn btn-primary" [disabled]="busy||!capabilities.upload" (click)="uploadInput.click()">上传文件</button><input #uploadInput type="file" multiple hidden (change)="upload($event)"><button *ngIf="capabilities.write" class="btn btn-secondary" [disabled]="busy" (click)="mkdir()">新建目录</button></div>
+    <p *ngIf="error" class="file-error" role="alert">{{error}}</p><p *ngIf="notice" role="status">{{notice}}</p><p *ngIf="busy" role="status">{{progress||'正在读取…'}}</p><p *ngIf="truncated" class="file-note">目录项目较多，仅显示前 5000 项。可以在上方输入具体路径。</p>
+    <div class="file-table"><table><thead><tr><th>名称</th><th>大小</th><th>操作</th></tr></thead><tbody><tr *ngFor="let item of entries"><td><button class="file-name" *ngIf="item.type==='dir'" [disabled]="busy" (click)="run(navigate.bind(this,item.path))">📁 {{item.name}}</button><span *ngIf="item.type!=='dir'">{{item.name}}</span></td><td>{{item.type==='dir'?'目录':item.size+' B'}}</td><td class="file-actions"><button *ngIf="item.type==='file'" class="btn btn-sm btn-secondary" [disabled]="busy" (click)="download(item)">下载</button><button *ngIf="capabilities.write" class="btn btn-sm btn-secondary" [disabled]="busy" (click)="rename(item)">重命名</button><button *ngIf="capabilities.write" class="btn btn-sm btn-secondary" [disabled]="busy" (click)="remove(item)">删除</button></td></tr></tbody></table></div></div>
+    <div class="modal-footer"><button class="btn btn-secondary" (click)="modal.dismiss()">{{busy?'取消并关闭':'关闭'}}</button></div>`})(FileBrowser);
+    function openFiles(tab,modal,zone){return zone.run(()=>{const ref=modal.open(FileBrowser,{size:'lg'});ref.componentInstance.profile=tab.profile;ref.result.catch(()=>{});return ref;});}
+
     class ConnectionStatusDecorator extends terminal.TerminalDecorator {
-        constructor(zone){super();this.zone=zone;}
+        constructor(zone,modal){super();this.zone=zone;this.modal=modal;}
         attach(tab){
             if(!tab.profile||!['ssh','lightos'].includes(tab.profile.type))return;
+            const reconnectCleanup=window.TabbySSHReconnect.install(tab);
             const target=tab.element&&tab.element.nativeElement;if(!target)return;
             const banner=document.createElement('div'),text=document.createElement('span'),button=document.createElement('button');
             banner.className='tabby-connection-status';banner.setAttribute('role','status');banner.style.cssText='flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:6px 12px;min-height:34px;background:#202936;color:#c3d0e1;font:12px/1.5 system-ui;';
             text.style.cssText='flex:1;overflow-wrap:anywhere';button.className='btn btn-sm btn-secondary';button.style.cssText='padding:1px 10px;font-size:12px;flex-shrink:0';
-            banner.append(text,button);target.insertBefore(banner,target.firstChild);
+            let fileButton=null;
+            if(tab.profile.type==='lightos'){fileButton=document.createElement('button');fileButton.className='btn btn-sm btn-secondary';fileButton.textContent='文件传输';fileButton.onclick=()=>openFiles(tab,this.modal,this.zone);}
+            banner.append(text);if(fileButton)banner.append(fileButton);banner.append(button);target.insertBefore(banner,target.firstChild);
             const toolbar=target.querySelector(':scope > terminal-toolbar'),pin=target.querySelector(':scope > .toolbar-pin-button');
             const oldToolbarTop=toolbar&&toolbar.style.top,oldPinTop=pin&&pin.style.top;
             const positionToolbar=()=>{const height=banner.getBoundingClientRect().height;if(toolbar)toolbar.style.top=height+'px';if(pin)pin.style.top=(height+5)+'px';};
@@ -621,7 +810,7 @@
             const online=()=>{if(!navigator.onLine&&(!tab.session||!tab.session.open))set('disconnected','网络已断开，请恢复网络后重新连接');};
             window.addEventListener('offline',online);
             this.subscribeUntilDetached(tab,tab.sessionChanged$.subscribe(update));
-            tab.__statusCleanup=()=>{stopped=true;clearInterval(timer);window.removeEventListener('offline',online);button.removeEventListener('click',click);if(observer)observer.disconnect();if(toolbar)toolbar.style.top=oldToolbarTop;if(pin)pin.style.top=oldPinTop;banner.remove();restorers.reverse().forEach(f=>f());};
+            tab.__statusCleanup=()=>{stopped=true;clearInterval(timer);window.removeEventListener('offline',online);button.removeEventListener('click',click);if(observer)observer.disconnect();if(toolbar)toolbar.style.top=oldToolbarTop;if(pin)pin.style.top=oldPinTop;if(fileButton)fileButton.onclick=null;banner.remove();restorers.reverse().forEach(f=>f());reconnectCleanup();};
         }
         detach(tab){if(tab.__statusCleanup)tab.__statusCleanup();super.detach(tab);}
     }
@@ -687,13 +876,15 @@
         detach(tab){if(tab.__clipboardCleanup)tab.__clipboardCleanup();super.detach(tab);}
     }
     class TerminalActionsMenu extends core.TabContextMenuItemProvider {
-        constructor(){super();this.weight=-100;}
+        constructor(modal,zone){super();this.modal=modal;this.zone=zone;this.weight=-100;}
         async getItems(tab){
             if(!(tab instanceof terminal.BaseTerminalTabComponent))return [];
-            return [{label:'复制',enabled:!!(tab.frontend&&tab.frontend.getSelection()),click:()=>tab.platform.setClipboard({text:tab.frontend.getSelection()})},
+            const items=[{label:'复制',enabled:!!(tab.frontend&&tab.frontend.getSelection()),click:()=>tab.platform.setClipboard({text:tab.frontend.getSelection()})},
                 {label:'粘贴',enabled:!!(tab.session&&tab.session.open),click:()=>tab.paste()},
                 {label:'重新连接',enabled:typeof tab.reconnect==='function',click:()=>tab.reconnect()},
                 {label:'断开连接',enabled:!!(tab.session&&tab.session.open),click:()=>{if(tab.disconnect)tab.disconnect();else if(tab.session)tab.session.destroy();}}];
+            if(tab.profile&&tab.profile.type==='lightos')items.push({label:'文件传输',click:()=>openFiles(tab,this.modal,this.zone)});
+            return items;
         }
     }
     class LightOSRecovery extends core.TabRecoveryProvider {
@@ -755,8 +946,8 @@
         }
     }
     class LightOSModule {}
-    ng.NgModule({imports:[common.CommonModule, terminal.default,bootstrap.NgbModule], declarations:[LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog], entryComponents:[LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog],
-        providers:[{provide:terminal.TerminalDecorator,useFactory:z=>new ConnectionStatusDecorator(z),deps:[ng.NgZone],multi:true},{provide:terminal.TerminalDecorator,useFactory:(m,z)=>new BrowserTerminalDecorator(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabContextMenuItemProvider,useClass:TerminalActionsMenu,multi:true},{provide:core.TabRecoveryProvider,useClass:LightOSRecovery,multi:true},{provide:core.ProfileProvider,useClass:LightOSProfiles,multi:true},
+    ng.NgModule({imports:[common.CommonModule, forms.FormsModule, terminal.default,bootstrap.NgbModule], declarations:[FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog], entryComponents:[FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog],
+        providers:[{provide:terminal.TerminalDecorator,useFactory:(z,m)=>new ConnectionStatusDecorator(z,m),deps:[ng.NgZone,bootstrap.NgbModal],multi:true},{provide:terminal.TerminalDecorator,useFactory:(m,z)=>new BrowserTerminalDecorator(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabContextMenuItemProvider,useFactory:(m,z)=>new TerminalActionsMenu(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabRecoveryProvider,useClass:LightOSRecovery,multi:true},{provide:core.ProfileProvider,useClass:LightOSProfiles,multi:true},
             {provide:core.ToolbarButtonProvider,useFactory:(p,a,m,z)=>new LightOSToolbar(p,a,m,z),deps:[core.ProfilesService,core.AppService,bootstrap.NgbModal,ng.NgZone],multi:true}]})(LightOSModule);
     module.exports = {default:LightOSModule};
 })();

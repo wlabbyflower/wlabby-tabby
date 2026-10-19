@@ -16,15 +16,15 @@ def key():
     return value.encode()
 
 
-def issue(user, host, now=None):
-    payload = {'user': user, 'host': host, 'expires': int(time.time() if now is None else now) + 45,
+def issue(user, host, now=None, purpose="terminal"):
+    payload = {'purpose': purpose, 'user': user, 'host': host, 'expires': int(time.time() if now is None else now) + 45,
                'nonce': secrets.token_hex(24)}
     body = base64.urlsafe_b64encode(json.dumps(payload, separators=(',', ':')).encode()).decode().rstrip('=')
     signature = hmac.new(key(), body.encode(), hashlib.sha256).hexdigest()
     return body + '.' + signature
 
 
-def consume(ticket, origin, used, now=None):
+def consume(ticket, origin, used, now=None, purpose="terminal"):
     now = time.time() if now is None else now
     if not isinstance(ticket, str) or len(ticket) > 4096:
         raise ValueError('本机终端授权无效，请重新连接')
@@ -35,6 +35,8 @@ def consume(ticket, origin, used, now=None):
     payload = json.loads(base64.urlsafe_b64decode(body + '=' * (-len(body) % 4)))
     if not isinstance(payload['expires'], int) or not 0 < payload['expires'] - now <= 45:
         raise ValueError('本机终端授权已过期，请重新连接')
+    if payload.get('purpose', 'terminal') != purpose:
+        raise ValueError('授权用途不匹配')
     parsed = urlsplit(origin or '')
     if parsed.scheme not in ('http', 'https') or parsed.netloc != payload['host']:
         raise ValueError('拒绝跨站终端连接')

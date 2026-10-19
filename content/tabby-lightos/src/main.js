@@ -2,6 +2,7 @@
 (function () {
     const ng = require('@angular/core');
     const common = require('@angular/common');
+    const forms = require('@angular/forms');
     const core = require('tabby-core');
     const terminal = require('tabby-terminal');
     const Buffer = require('buffer').Buffer;
@@ -169,6 +170,7 @@
         <div class="text-danger" role="alert">{{error}}</div></div>
         <div class="modal-footer"><button class="btn btn-secondary" type="button" (click)="modal.dismiss()">取消</button><button class="btn btn-primary" [disabled]="busy">保存并连接</button></div></form>`})(NewSSHConnection);
     // @include connection-hub.js
+    // @include file-browser.js
     // @include connection-status.js
     class ClipboardDialog {
         constructor(modal){this.modal=modal;this.text='';this.copy=false;}
@@ -231,13 +233,15 @@
         detach(tab){if(tab.__clipboardCleanup)tab.__clipboardCleanup();super.detach(tab);}
     }
     class TerminalActionsMenu extends core.TabContextMenuItemProvider {
-        constructor(){super();this.weight=-100;}
+        constructor(modal,zone){super();this.modal=modal;this.zone=zone;this.weight=-100;}
         async getItems(tab){
             if(!(tab instanceof terminal.BaseTerminalTabComponent))return [];
-            return [{label:'复制',enabled:!!(tab.frontend&&tab.frontend.getSelection()),click:()=>tab.platform.setClipboard({text:tab.frontend.getSelection()})},
+            const items=[{label:'复制',enabled:!!(tab.frontend&&tab.frontend.getSelection()),click:()=>tab.platform.setClipboard({text:tab.frontend.getSelection()})},
                 {label:'粘贴',enabled:!!(tab.session&&tab.session.open),click:()=>tab.paste()},
                 {label:'重新连接',enabled:typeof tab.reconnect==='function',click:()=>tab.reconnect()},
                 {label:'断开连接',enabled:!!(tab.session&&tab.session.open),click:()=>{if(tab.disconnect)tab.disconnect();else if(tab.session)tab.session.destroy();}}];
+            if(tab.profile&&tab.profile.type==='lightos')items.push({label:'文件传输',click:()=>openFiles(tab,this.modal,this.zone)});
+            return items;
         }
     }
     class LightOSRecovery extends core.TabRecoveryProvider {
@@ -299,8 +303,8 @@
         }
     }
     class LightOSModule {}
-    ng.NgModule({imports:[common.CommonModule, terminal.default,bootstrap.NgbModule], declarations:[LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog], entryComponents:[LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog],
-        providers:[{provide:terminal.TerminalDecorator,useFactory:z=>new ConnectionStatusDecorator(z),deps:[ng.NgZone],multi:true},{provide:terminal.TerminalDecorator,useFactory:(m,z)=>new BrowserTerminalDecorator(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabContextMenuItemProvider,useClass:TerminalActionsMenu,multi:true},{provide:core.TabRecoveryProvider,useClass:LightOSRecovery,multi:true},{provide:core.ProfileProvider,useClass:LightOSProfiles,multi:true},
+    ng.NgModule({imports:[common.CommonModule, forms.FormsModule, terminal.default,bootstrap.NgbModule], declarations:[FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog], entryComponents:[FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog],
+        providers:[{provide:terminal.TerminalDecorator,useFactory:(z,m)=>new ConnectionStatusDecorator(z,m),deps:[ng.NgZone,bootstrap.NgbModal],multi:true},{provide:terminal.TerminalDecorator,useFactory:(m,z)=>new BrowserTerminalDecorator(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabContextMenuItemProvider,useFactory:(m,z)=>new TerminalActionsMenu(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabRecoveryProvider,useClass:LightOSRecovery,multi:true},{provide:core.ProfileProvider,useClass:LightOSProfiles,multi:true},
             {provide:core.ToolbarButtonProvider,useFactory:(p,a,m,z)=>new LightOSToolbar(p,a,m,z),deps:[core.ProfilesService,core.AppService,bootstrap.NgbModal,ng.NgZone],multi:true}]})(LightOSModule);
     module.exports = {default:LightOSModule};
 })();
