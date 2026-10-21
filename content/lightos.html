@@ -5,7 +5,7 @@
 :root{color-scheme:dark;font:16px/1.7 system-ui;background:#111620;color:#e3e9f3}body{max-width:720px;margin:64px auto;padding:0 24px}h1{font-size:28px}p{color:#a6b2c7}a{color:#9fc3ff}.actions{display:flex;gap:16px;flex-wrap:wrap;margin:28px 0}.primary,button{padding:12px 20px;border-radius:8px;background:#8fb8ff;color:#11203a;text-decoration:none;border:0;font:inherit;cursor:pointer}[hidden]{display:none!important}#error{color:#ffaeae}
 </style>
 <h1>LightOS 实例管理</h1>
-<p>部署、启动、停止和删除实例，请使用 LightOS 原生管理页面。打开实例终端时，可在 WebShell 列表中选择 Tabby Web。</p>
+<p>部署、启动、停止和删除实例，请使用 LightOS 原生管理页面。打开实例终端时，可在 WebShell 列表中选择 Tabby 终端。</p>
 <div class="actions"><a id="manager" class="primary" target="_blank" rel="noopener noreferrer" hidden>打开 LightOS 管理 ↗</a><button id="retry" hidden>重新获取入口</button><a id="tabby" href="/" target="_top">返回 Tabby</a></div>
 <p id="status" role="status">正在获取当前微服的 LightOS 入口…</p><p id="error" role="alert"></p>
 <p>管理页面在独立窗口打开，当前 Tabby 终端保持连接。终端下拉列表需要 LightOS 支持第三方 WebShell。</p>

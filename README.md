@@ -1,8 +1,10 @@
 # wlabby-tabby
 
+基于 Tabby 的终端，集成 SSH、LZC OS 本机终端及 LightOS 服务端、客户端实例连接，在一个页面中管理多台设备。
+
 基于 [Eugeny](https://github.com/Eugeny) 创建的 [Tabby Web](https://github.com/Eugeny/tabby-web) 的懒猫微服适配项目，集成 LZC OS、LightOS 与 SSH 终端。终端与 Web 服务的基础能力来自原项目，本仓库维护懒猫微服适配和相关功能扩展。
 
-版本 `0.6.5`，应用 ID `cloud.lazycat.app.tabbyweb`。标准 LPK v2 应用：Tabby 原生终端标签、当前微服本机终端、LightOS 实例管理，以及其他设备的 SSH 连接。
+版本 `0.6.6`，应用 ID `cloud.lazycat.app.tabbyweb`。标准 LPK v2 应用：Tabby 原生终端标签、当前微服本机终端、LightOS 实例管理，以及其他设备的 SSH 连接。
 
 仅支持桌面客户端（Windows、macOS、Linux）；包声明不支持 Android、iOS（含 iPad）和 tvOS 智慧屏。
 
@@ -45,7 +47,7 @@ LightOS 容器文件助手通过标准输入临时传入并运行，结束后清
 
 ## LightOS WebShell 接入
 
-本应用通过 LPK 的 `lightos.webshell` 资源导出机制注册终端提供方。安装本版本后，在支持第三方 WebShell 的 LightOS 管理页面选择 **Tabby Web**，即可打开指定实例的 Tabby 原生终端；客户端实例也支持通过 `client:<实例标识>` 进入。不同版本 LightOS 的菜单名称可能不同。
+本应用通过 LPK 的 `lightos.webshell` 资源导出机制注册终端提供方。安装本版本后，在支持第三方 WebShell 的 LightOS 管理页面选择 **Tabby 终端**，即可打开指定实例的 Tabby 原生终端；客户端实例也支持通过 `client:<实例标识>` 进入。不同版本 LightOS 的菜单名称可能不同。
 
 入口支持 `?name=实例名@owner_deploy_id`、`?target=实例名@owner_deploy_id` 和原有 `?lightos=实例名&owner=owner_deploy_id`。完成 OIDC 登录后会继续打开目标，连接前重新核对当前可访问列表及在线状态；不可访问的目标显示错误，不自动连接其他实例。无目标参数时打开连接首页。
 
