@@ -9,7 +9,7 @@ root = Path(__file__).resolve().parents[1]
 go = os.environ.get('TABBY_GO') or shutil.which('go')
 if not go:
     raise SystemExit('Go 1.24.6+ is required; set TABBY_GO to its executable path.')
-for name in ('client-auth-token', 'file-worker'):
+for name in ('client-auth-token', 'file-worker', 'ssh-worker'):
     output = root / 'content' / name
     output.mkdir(exist_ok=True)
     for arch in ('amd64', 'arm64'):

@@ -39,7 +39,7 @@
     class ConnectionHub extends core.BaseTabComponent {
         constructor(profiles,config,app,modal,zone){
             super();this.profiles=profiles;this.config=config;this.app=app;this.modal=modal;this.zone=zone;
-            this.saved=[];this.lightos=[];this.clients=[];this.clientNotice='';this.recent=[];this.credentials=[];this.local=null;this.loading=false;this.error='';this.entryError='';this.notice='';this.adminNotice='';this.query='';this.panel='connections';this.alive=true;
+            this.held=[];this.saved=[];this.lightos=[];this.clients=[];this.clientNotice='';this.recent=[];this.credentials=[];this.local=null;this.loading=false;this.error='';this.entryError='';this.notice='';this.adminNotice='';this.query='';this.panel='connections';this.alive=true;
             this.subscribeUntilDestroyed(this.focused$,()=>this.refresh());
         }
         ngOnInit(){this.refresh();}
@@ -50,8 +50,8 @@
         async refresh(){
             if(!this.alive)return;if(this.loading){this.refreshAgain=true;return;}this.loading=true;this.error='';this.adminNotice='';
             try{
-                const [credentials,history,local,lightos,clients]=await Promise.allSettled([
-                    requestJSON('/api/1/credentials/list/',{}),requestJSON('/api/1/connections/history/'),localOSProfile(),instances(),requestJSON('/lightos/api/client-instances')
+                const [credentials,history,local,lightos,clients,held]=await Promise.allSettled([
+                    requestJSON('/api/1/credentials/list/',{}),requestJSON('/api/1/connections/history/'),localOSProfile(),instances(),requestJSON('/lightos/api/client-instances'),persistence.command({action:'list'})
                 ]);
                 this.zone.run(()=>{
                     if(!this.alive)return;
@@ -60,6 +60,7 @@
                     this.lightos=lightos.status==='fulfilled'?lightos.value:[];
                     this.clients=clients.status==='fulfilled'?clients.value:[];this.clientNotice=clients.status==='rejected'?clients.reason.message:'';
                     this.adminNotice=[local,lightos].filter(r=>r.status==='rejected').map(r=>r.reason.message).filter((v,i,a)=>a.indexOf(v)===i).join('；');
+                    this.held=held.status==='fulfilled'?held.value.items:[];
                     this.credentials=credentials.status==='fulfilled'?credentials.value.items:[];
                     if(credentials.status==='rejected')this.error=credentials.reason.message;
                     if(history.status==='rejected')this.error=this.error||history.reason.message;
@@ -67,6 +68,14 @@
                     this.recent=history.status==='fulfilled'?history.value.items.map(h=>{const p=all.find(p=>p.id===h.profile_id);return p?{profile:p,time:new Date(h.opened_at).toLocaleString()}:null;}).filter(Boolean):[];
                 });
             }catch(e){this.zone.run(()=>this.error=e.message);}finally{this.zone.run(()=>{this.loading=false;if(this.refreshAgain&&this.alive){this.refreshAgain=false;this.refresh();}});}
+        }
+        async resume(item){
+            for(const top of this.app.tabs){const found=(top.getAllTabs?top.getAllTabs():[top]).find(t=>t.session&&t.session.id===item.id);if(found){this.app.selectTab(top);if(top.focus)top.focus(found);return;}}
+            const parameters=await this.profiles.newTabParametersForProfile(item.profile);if(parameters){parameters.inputs.profile.__persistentSession=item.id;this.zone.run(()=>this.app.openNewTab(parameters));}
+        }
+        async closeHeld(item){
+            if(!window.confirm('结束“'+item.profile.name+'”会话？该终端内运行的任务将停止。'))return;
+            try{await persistence.command({action:'end',id:item.id});await this.refresh();}catch(e){this.zone.run(()=>this.error=e.message);}
         }
         async open(p){try{await this.profiles.openNewTabForProfile(p);}catch(e){this.zone.run(()=>this.error=e.message);}}
         openLightOS(i){this.open(profile(i));}
@@ -113,6 +122,7 @@
         <ng-container *ngIf="loggedIn">
         <header class="heading"><div><h1>连接首页</h1><span class="muted">{{username}} · OIDC 已登录</span></div><div class="actions"><button class="btn btn-secondary" [disabled]="loading" (click)="refresh()">{{loading?'正在刷新…':'刷新列表'}}</button><button class="btn btn-primary" (click)="newSSH()">＋ 新建 SSH 连接</button></div></header>
         <div class="banner failure" *ngIf="entryError" role="alert">{{entryError}}</div><div class="banner failure" *ngIf="error" role="alert">{{error}} <button *ngIf="error.includes('OIDC')" class="btn btn-sm btn-secondary" (click)="login()">OIDC 登录</button></div><div class="banner" *ngIf="notice" role="status">{{notice}}</div>
+        <section *ngIf="held.length"><h2>后台会话</h2><p class="muted">关闭页面后会话继续运行，重新打开会自动恢复。结束会话会停止其中的任务。</p><div class="list"><div class="row-item" *ngFor="let item of held"><div><strong>{{item.profile.name}}</strong><div class="description">{{item.exited?'已结束，可查看保留的输出':'运行中'}}</div></div><div class="actions"><button class="btn btn-secondary" (click)="resume(item)">{{item.exited?'查看输出':'回到终端'}}</button><button class="btn btn-outline-danger" (click)="closeHeld(item)">结束会话</button></div></div></div></section>
         <section class="cards" aria-label="选择连接类型">
             <button class="card-button" [disabled]="!local" (click)="open(local)"><strong>LZC OS 本机</strong><span class="muted">直接进入当前微服终端</span><small>管理员可用 · 无需 SSH 密码</small></button>
             <button class="card-button" (click)="panel='lightos'"><strong>LightOS 实例</strong><span class="muted">选择实例，打开终端</span><small>{{lightos.length}} 个服务端实例 · {{clients.length}} 个客户端实例</small></button>

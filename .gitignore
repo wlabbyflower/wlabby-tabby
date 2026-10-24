@@ -30,3 +30,5 @@ venv/
 .vscode/
 
 /content/file-worker/
+
+/content/ssh-worker/

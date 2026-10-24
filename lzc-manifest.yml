@@ -18,7 +18,11 @@ usage: |
   终端右键可以复制、粘贴、重新连接、断开连接。
   本机和 LightOS 终端可点击状态栏“文件传输”，SSH 设备使用 SFTP。
   客户端上传保存在客户端提供的临时目录，完成后显示路径。
-  连接中断后点击“重新连接”。升级应用会中断现有终端，请先保存工作。
+  关闭页面后，普通直连 SSH（密码、私钥）、本机和 LightOS 终端在后台继续运行。
+  重新打开会自动接回原会话，也可以在连接首页的“后台会话”中回到终端或结束会话。
+  主动断开连接或关闭终端标签会结束该会话；文件传输请等待完成后再关页。
+  每账号最多 8 个运行中的后台会话，每个会话恢复最近 2 MiB 输出。
+  应用停止、重启或升级会中断现有终端，请先保存工作。
 
 application:
   image: registry.lazycat.cloud/abby/eugeny/tabby-connection-gateway:d9737cecff2904db
@@ -37,6 +41,12 @@ application:
     - HOST_TERMINAL_SECRET={{ sha256sum (stable_secret "tabby-host-terminal") }}
 
   upstreams:
+    - location: /sessions/
+      backend: http://127.0.0.1:9004/
+      backend_launch_command: /lzcapp/pkg/content/lightos-manager.py
+      fix_websocket_header: true
+      disable_auto_health_checking: true
+
     - location: /lzc-terminal/
       backend: http://hostterm:9003/
       fix_websocket_header: true

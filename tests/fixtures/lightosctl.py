@@ -9,7 +9,7 @@ if args == ['--print-status', 'ps']:
     print(json.dumps([{'name':'fixture','owner_deploy_id':'test.owner','status':'running','username':'root'}]))
 elif args == ['exec', 'fixture@test.owner', 'uname', '-m']:
     print(platform.machine())
-elif args[:3] == ['exec', '-i', 'fixture@test.owner']:
+elif args[:3] in (['exec', '-i', 'fixture@test.owner'], ['exec', '-it', 'fixture@test.owner']):
     os.execv(args[3], args[3:])
 else:
     sys.exit(2)

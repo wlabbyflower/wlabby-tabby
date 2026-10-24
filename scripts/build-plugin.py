@@ -7,7 +7,7 @@ root = Path(__file__).resolve().parents[1]
 base = root / 'content/tabby-lightos'
 source, output = base / 'src', base / 'dist'
 helpers = ['connection-health.js', 'gateway-defaults.js', 'terminal-actions.js',
-           'sidebar-toggle.js', 'credential-storage.js', 'connection-ui.js', 'terminal-scroll.js', 'webshell-entry.js', 'ssh-reconnect.js', 'file-channel.js']
+           'sidebar-toggle.js', 'credential-storage.js', 'connection-ui.js', 'terminal-scroll.js', 'webshell-entry.js', 'ssh-reconnect.js', 'file-channel.js', 'persistent-sessions.js']
 output.mkdir(exist_ok=True)
 for name in helpers:
     subprocess.run(['node', '--check', str(source / name)], check=True)

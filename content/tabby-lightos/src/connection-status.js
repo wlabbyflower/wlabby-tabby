@@ -3,6 +3,7 @@
         attach(tab){
             if(!tab.profile||!['ssh','lightos'].includes(tab.profile.type))return;
             const reconnectCleanup=window.TabbySSHReconnect.install(tab);
+            const persistenceCleanup=installPersistentSSH(tab);
             const target=tab.element&&tab.element.nativeElement;if(!target)return;
             const banner=document.createElement('div'),text=document.createElement('span'),button=document.createElement('button');
             banner.className='tabby-connection-status';banner.setAttribute('role','status');banner.style.cssText='flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:6px 12px;min-height:34px;background:#202936;color:#c3d0e1;font:12px/1.5 system-ui;';
@@ -25,7 +26,7 @@
                         connectedSession=tab.session;
                         requestJSON('/api/1/connections/history/',{action:'touch',profile_id:tab.profile.id}).catch(()=>{});
                     }
-                    set('connected','已连接 · '+(tab.profile.type==='ssh'?tab.profile.options.user+'@'+tab.profile.options.host+':'+(tab.profile.options.port||22):tab.profile.options.kind==='host'?'LZC OS 本机终端':tab.profile.options.kind==='client'?tab.profile.name:'LightOS · '+tab.profile.options.name));
+                    set('connected',(tab.__persistenceNotice?tab.__persistenceNotice+' · ':'已连接 · ')+(tab.profile.type==='ssh'?tab.profile.options.user+'@'+tab.profile.options.host+':'+(tab.profile.options.port||22):tab.profile.options.kind==='host'?'LZC OS 本机终端':tab.profile.options.kind==='client'?tab.profile.name:'LightOS · '+tab.profile.options.name));
                 }else if(tab.__connectionStatus&&tab.__connectionStatus.state==='connected')set('disconnected',byHand?'连接已断开':'连接已中断，请重新连接');
                 else if((attempting||!tab.__connectionStatus||tab.__connectionStatus.state==='connecting')&&tab.hasFocus){
                     const password=document.querySelector('ngb-modal-window input[type="password"]');
@@ -60,7 +61,7 @@
             const online=()=>{if(!navigator.onLine&&(!tab.session||!tab.session.open))set('disconnected','网络已断开，请恢复网络后重新连接');};
             window.addEventListener('offline',online);
             this.subscribeUntilDetached(tab,tab.sessionChanged$.subscribe(update));
-            tab.__statusCleanup=()=>{stopped=true;clearInterval(timer);window.removeEventListener('offline',online);button.removeEventListener('click',click);if(observer)observer.disconnect();if(toolbar)toolbar.style.top=oldToolbarTop;if(pin)pin.style.top=oldPinTop;if(fileButton)fileButton.onclick=null;banner.remove();restorers.reverse().forEach(f=>f());reconnectCleanup();};
+            tab.__statusCleanup=()=>{stopped=true;clearInterval(timer);window.removeEventListener('offline',online);button.removeEventListener('click',click);if(observer)observer.disconnect();if(toolbar)toolbar.style.top=oldToolbarTop;if(pin)pin.style.top=oldPinTop;if(fileButton)fileButton.onclick=null;banner.remove();restorers.reverse().forEach(f=>f());persistenceCleanup();reconnectCleanup();};
         }
         detach(tab){if(tab.__statusCleanup)tab.__statusCleanup();super.detach(tab);}
     }

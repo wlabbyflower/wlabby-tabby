@@ -49,4 +49,5 @@ for version_dir in /app-dist/*/; do
     [ -d "$version_dir/tabby-core" ] || continue
     cp -R /lzcapp/pkg/content/tabby-lightos "$version_dir/"
 done
+python /lzcapp/pkg/content/patch-ssh.py || exit 1
 exit 0

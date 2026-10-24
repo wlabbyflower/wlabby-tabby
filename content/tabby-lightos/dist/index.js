@@ -364,6 +364,30 @@
     const api={Channel,encode,decode};if(typeof module==='object'&&module.exports)module.exports=api;root.TabbyFileChannel=api;
 })(typeof window==='undefined'?globalThis:window);
 
+/* Browser lifecycle adapter; account and terminal ownership live on the server. */
+(function(root){
+    let leaving=false;
+    root.addEventListener('beforeunload',()=>{leaving=true;});
+    if(root.parent!==root)root.parent.addEventListener('beforeunload',()=>{leaving=true;});
+    function socket(){const url=new URL('/sessions/',location.href);url.protocol=location.protocol==='https:'?'wss:':'ws:';return new WebSocket(url.href);}
+    function command(value){return new Promise((resolve,reject)=>{
+        const ws=socket(),timer=setTimeout(()=>{ws.close();reject(Error('后台会话服务未响应，请稍后重试'));},15000);
+        const stop=()=>clearTimeout(timer);
+        ws.onopen=()=>ws.send(JSON.stringify(value));
+        ws.onmessage=e=>{const data=JSON.parse(e.data);stop();ws.close();if(data.error)reject(Error(data.error));else resolve(data);};
+        ws.onerror=()=>{stop();reject(Error('无法读取后台会话，请确认登录状态'));};
+        ws.onclose=()=>{stop();reject(Error('后台会话连接已关闭'));};
+    });}
+    function installAuthentication(ssh){
+        const type=ssh.LazycatSSHSession;if(!type)return null;
+        const captured=new WeakMap(),native=type.prototype.handleAuth,verify=type.prototype.verifyHostKey;
+        type.prototype.verifyHostKey=function(handshake){this.__persistentHostAlgorithm=handshake.serverHostKey;return verify.call(this,handshake);};
+        type.prototype.handleAuth=async function(...args){const auth=await native.apply(this,args);if(auth&&typeof auth==='object')captured.set(this,auth);return auth;};
+        return captured;
+    }
+    root.TabbyPersistentSessions={socket,command,installAuthentication,isLeaving:()=>leaving};
+})(window);
+
 /* Tabby plugin: real terminal tabs sharing Tabby's renderer, shortcuts and tab bar. */
 (function () {
     const ng = require('@angular/core');
@@ -425,46 +449,89 @@
             options: { name: i.name, owner: i.owner_deploy_id }, isBuiltin: true,
             behaviorOnSessionEnd: 'keep', disableDynamicTitle: true };
     }
-    class LightOSSession extends terminal.BaseSession {
-        constructor(injector, p) {
-            super(injector.get(core.LogService).create(p.options.kind==='host'?'lzcos-local':'lightos-' + p.options.name));
-            this.profile = p; this.label=p.options.kind==='host'?'LZC OS':p.options.kind==='client'?'客户端':'LightOS'; this.open = false; this.columns = 80; this.rows = 24;
+    const persistence=window.TabbyPersistentSessions;
+    const sshAuthentication=persistence.installAuthentication(require('tabby-ssh'));
+    class PersistentSession extends terminal.BaseSession {
+        constructor(injector,p,id,auth){
+            super(injector.get(core.LogService).create('persistent-terminal'));
+            this.zone=injector.get(ng.NgZone);this.profile=p;this.id=id;this.auth=auth;this.open=false;this.columns=80;this.rows=24;this.replaying=true;this.lastSequence=0;this.decoder=new TextDecoder();
         }
-        async start() {
-            let ticket=null;
-            if(this.profile.options.kind==='host')ticket=(await requestJSON('/lightos/api/local-terminal-ticket',{})).ticket;
-            return new Promise((resolve, reject) => {
-                const u = new URL(ticket?'/lzc-terminal/':'/lightos-terminal/', location.href);
-                u.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-                if(ticket)u.searchParams.set('ticket',ticket);
-                else if(this.profile.options.kind==='client')u.searchParams.set('client',this.profile.options.id);
-                else {u.searchParams.set('name', this.profile.options.name);u.searchParams.set('owner', this.profile.options.owner || '');}
-                this.ws = new WebSocket(u.href); this.ws.binaryType = 'arraybuffer';
-                const ready=()=>{if(this.open)return;this.open=true;this.resize(this.columns,this.rows);if(health)this.health=health.watch(this.ws,()=>this.ws.send(JSON.stringify({type:'ping'})),reason=>{this.emitOutput(Buffer.from('\r\n'+reason+'\r\n'));this.kill();});resolve();};
-                this.ws.onopen=()=>{if(this.profile.options.kind!=='client')ready();};
-                this.ws.onmessage = e => {
-                    if (typeof e.data === 'string') {
-                        const message = JSON.parse(e.data);
-                        if(message.type==='ready'){ready();return;}
-                        if(message.type==='pong'){if(this.health)this.health.pong();return;}
-                        if(message.error){if(!this.open){reject(Error(message.error));this.kill();}else{this.emitOutput(Buffer.from('\r\n'+this.label+': '+message.error+'\r\n'));this.kill();}}
-                    } else this.emitOutput(Buffer.from(e.data));
-                };
-                this.ws.onerror = () => { reject(Error(this.label+' 终端连接失败，请确认管理员登录状态')); };
-                this.ws.onclose = () => {if(this.health)this.health.stop();if(this.open){this.emitOutput(Buffer.from('\r\n['+this.label+' 终端已断开；请右键重新连接]\r\n'));this.destroy();}else reject(Error(this.label+' 终端已断开'));};
+        start(){return new Promise((resolve,reject)=>{
+            const ws=this.ws=persistence.socket();let settled=false;
+            const timer=setTimeout(()=>{if(!settled){settled=true;reject(Error('后台终端启动超时，请重新连接'));ws.close();}},60000);
+            const fail=e=>{if(!settled){settled=true;clearTimeout(timer);reject(e);}};
+            ws.onopen=()=>{ws.send(JSON.stringify(this.id?{action:'attach',id:this.id}:{action:'create',profile:this.profile,ssh:this.auth}));this.auth=null;};
+            ws.onmessage=event=>this.zone.run(()=>{
+                const message=JSON.parse(event.data);
+                if(message.type==='attached'){this.id=message.id;return;}
+                if(message.type==='replay-start'){this.replaying=true;if(message.truncated)this.emitOutput(Buffer.from('[仅恢复最近 2 MiB 终端输出]\r\n'));return;}
+                if(message.type==='replay-end'){this.replaying=false;return;}
+                if(message.type==='output'){if(message.seq>this.lastSequence){this.lastSequence=message.seq;this.emitOutput(Buffer.from(this.decoder.decode(Buffer.from(message.data,'base64'),{stream:true})));}return;}
+                if(message.type==='pong'){if(this.health)this.health.pong();return;}
+                if(message.type==='ready'){
+                    if(this.open)return;this.open=true;clearTimeout(timer);settled=true;
+                    this.resize(this.columns,this.rows);
+                    if(health)this.health=health.watch(ws,()=>ws.send(JSON.stringify({type:'ping'})),()=>ws.close());
+                    resolve();return;
+                }
+                if(message.type==='error'){this.emitOutput(Buffer.from('\r\n'+message.error+'\r\n'));fail(Error(message.error));return;}
+                if(message.type==='exit'){this.emitOutput(Buffer.from('\r\n[会话已结束]\r\n'));fail(Error('会话已结束'));this.drop();}
             });
+            ws.onerror=()=>fail(Error('后台终端连接失败，请检查登录状态和网络'));
+            ws.onclose=event=>{fail(Error(event.code===4001?'此会话已在另一个页面打开':'终端连接已断开'));this.drop();};
+        });}
+        resize(columns,rows){this.columns=columns;this.rows=rows;if(this.open&&this.ws&&this.ws.readyState===1)this.ws.send(JSON.stringify({type:'resize',columns,rows}));}
+        write(data){if(this.open&&!this.replaying&&this.ws&&this.ws.readyState===1)this.ws.send(data);}
+        async drop(){if(this.health)this.health.stop();await super.destroy();}
+        async destroy(){
+            if(this.ending)return this.ending;
+            this.ending=(async()=>{if(this.id&&!persistence.isLeaving())await persistence.command({action:'end',id:this.id}).catch(()=>{});if(this.health)this.health.stop();if(this.ws)this.ws.close();await super.destroy();})();
+            return this.ending;
         }
-        resize(columns, rows) {
-            this.columns = columns; this.rows = rows;
-            if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify({type:'resize', columns, rows}));
-        }
-        write(data) { if (this.ws && this.ws.readyState === 1) this.ws.send(data); }
-        kill() { if(this.health)this.health.stop();if (this.ws) this.ws.close(); }
-        async gracefullyKillProcess() { this.kill(); }
-        async destroy() { this.kill();await super.destroy(); }
-        supportsWorkingDirectory() { return false; }
-        async getWorkingDirectory() { return null; }
+        kill(){return this.destroy();}
+        gracefullyKillProcess(){if(this.ws)this.ws.close();}
+        supportsWorkingDirectory(){return false;}
+        async getWorkingDirectory(){return null;}
     }
+    function installPersistentSSH(tab){
+        if(!tab.profile||tab.profile.type!=='ssh'||!tab.setupOneSession||tab.__persistentSSHInstalled)return ()=>{};
+        tab.__persistentSSHInstalled=true;
+        const original={initializeSession:tab.initializeSession,openSFTP:tab.openSFTP,getRecoveryToken:tab.getRecoveryToken,disconnect:tab.disconnect};
+        const options=tab.profile.options;
+        const supported=sshAuthentication&&!options.jumpHost&&!options.socksProxyHost&&!options.httpProxyHost&&!options.proxyCommand;
+        let restored=tab.profile.__persistentSession||null;
+        tab.initializeSession=async function(...args){
+            if(!supported&&!restored){this.__persistenceNotice='此 SSH 认证或代理方式暂不支持后台托管';return original.initializeSession.apply(this,args);}
+            this.connectionError=null;let auth=null;
+            if(!restored){
+                this.sshSession=await this.setupOneSession(this.injector,this.profile);
+                const selected=sshAuthentication.get(this.sshSession);
+                if(!selected||!['password','publickey'].includes(selected.type)){
+                    this.__persistenceNotice='此 SSH 认证方式暂不支持后台托管';
+                    return original.initializeSession.apply(this,args);
+                }
+                auth={digest:this.sshSession.hostKeyDigest,hostAlgorithm:this.sshSession.__persistentHostAlgorithm};
+                if(selected.type==='password')auth.password=selected.password;
+                else auth.key=String(selected.key);
+            }
+            const session=new PersistentSession(this.injector,this.profile,restored,auth);restored=null;
+            this.setSession(session);
+            if(this.sshSession&&this.sshSession.open){const native=this.sshSession;native.ref();session.destroyed$.subscribe(()=>native.unref());}
+            await session.start();session.releaseInitialDataBuffer();session.resize(this.size.columns,this.size.rows);
+        };
+        tab.openSFTP=async function(...args){
+            if(this.session instanceof PersistentSession&&(!this.sshSession||!window.TabbySSHReconnect.live(this.sshSession))){
+                const shell=this.session,native=await this.setupOneSession(this.injector,this.profile);
+                if(this.session!==shell||!shell.open){if(!native.refCount)native.destroy();throw Error('终端已断开');}
+                native.ref();shell.destroyed$.subscribe(()=>native.unref());this.sshSession=native;
+            }
+            return original.openSFTP.apply(this,args);
+        };
+        tab.getRecoveryToken=async function(...args){return this.session instanceof PersistentSession?null:original.getRecoveryToken.apply(this,args);};
+        return ()=>{for(const [name,value]of Object.entries(original))if(value)tab[name]=value;};
+    }
+    const nativeSSHTab=require('tabby-ssh').LazycatSSHTab;
+    if(nativeSSHTab){const init=nativeSSHTab.prototype.ngOnInit;nativeSSHTab.prototype.ngOnInit=function(...args){installPersistentSSH(this);return init.apply(this,args);};}
     class LightOSTab extends terminal.BaseTerminalTabComponent {
         constructor(injector) { super(injector); this.lightosInjector = injector; }
         ngOnInit() {
@@ -473,15 +540,16 @@
         }
         async startLightOS() {
             const attempt=this.lightosAttempt=(this.lightosAttempt||0)+1;this.connectionError=null;
-            const session = new LightOSSession(this.lightosInjector, this.profile);
+            const session = new PersistentSession(this.lightosInjector, this.profile, this.profile.__persistentSession);
             this.setSession(session);
+            delete this.profile.__persistentSession;
             try { await session.start();if(this.frontendIsReady)session.releaseInitialDataBuffer(); }
             catch(e) { if(attempt===this.lightosAttempt){this.connectionError=e.message;this.write('\r\n'+e.message+'\r\n');} }
         }
         async disconnect() { this.lightosAttempt=(this.lightosAttempt||0)+1;if(this.session)await this.session.destroy(); }
         async reconnect() { await this.disconnect();await this.startLightOS();if(this.frontend)this.frontend.focus(); }
         async canClose() { return true; }
-        getRecoveryToken() { return Promise.resolve({type: 'lightos', profile: this.profile}); }
+        getRecoveryToken() { return Promise.resolve(null); }
     }
     LightOSTab.ctorParameters = () => [{type: ng.Injector}];
     ng.Input()(LightOSTab.prototype, 'profile');
@@ -576,7 +644,7 @@
     class ConnectionHub extends core.BaseTabComponent {
         constructor(profiles,config,app,modal,zone){
             super();this.profiles=profiles;this.config=config;this.app=app;this.modal=modal;this.zone=zone;
-            this.saved=[];this.lightos=[];this.clients=[];this.clientNotice='';this.recent=[];this.credentials=[];this.local=null;this.loading=false;this.error='';this.entryError='';this.notice='';this.adminNotice='';this.query='';this.panel='connections';this.alive=true;
+            this.held=[];this.saved=[];this.lightos=[];this.clients=[];this.clientNotice='';this.recent=[];this.credentials=[];this.local=null;this.loading=false;this.error='';this.entryError='';this.notice='';this.adminNotice='';this.query='';this.panel='connections';this.alive=true;
             this.subscribeUntilDestroyed(this.focused$,()=>this.refresh());
         }
         ngOnInit(){this.refresh();}
@@ -587,8 +655,8 @@
         async refresh(){
             if(!this.alive)return;if(this.loading){this.refreshAgain=true;return;}this.loading=true;this.error='';this.adminNotice='';
             try{
-                const [credentials,history,local,lightos,clients]=await Promise.allSettled([
-                    requestJSON('/api/1/credentials/list/',{}),requestJSON('/api/1/connections/history/'),localOSProfile(),instances(),requestJSON('/lightos/api/client-instances')
+                const [credentials,history,local,lightos,clients,held]=await Promise.allSettled([
+                    requestJSON('/api/1/credentials/list/',{}),requestJSON('/api/1/connections/history/'),localOSProfile(),instances(),requestJSON('/lightos/api/client-instances'),persistence.command({action:'list'})
                 ]);
                 this.zone.run(()=>{
                     if(!this.alive)return;
@@ -597,6 +665,7 @@
                     this.lightos=lightos.status==='fulfilled'?lightos.value:[];
                     this.clients=clients.status==='fulfilled'?clients.value:[];this.clientNotice=clients.status==='rejected'?clients.reason.message:'';
                     this.adminNotice=[local,lightos].filter(r=>r.status==='rejected').map(r=>r.reason.message).filter((v,i,a)=>a.indexOf(v)===i).join('；');
+                    this.held=held.status==='fulfilled'?held.value.items:[];
                     this.credentials=credentials.status==='fulfilled'?credentials.value.items:[];
                     if(credentials.status==='rejected')this.error=credentials.reason.message;
                     if(history.status==='rejected')this.error=this.error||history.reason.message;
@@ -604,6 +673,14 @@
                     this.recent=history.status==='fulfilled'?history.value.items.map(h=>{const p=all.find(p=>p.id===h.profile_id);return p?{profile:p,time:new Date(h.opened_at).toLocaleString()}:null;}).filter(Boolean):[];
                 });
             }catch(e){this.zone.run(()=>this.error=e.message);}finally{this.zone.run(()=>{this.loading=false;if(this.refreshAgain&&this.alive){this.refreshAgain=false;this.refresh();}});}
+        }
+        async resume(item){
+            for(const top of this.app.tabs){const found=(top.getAllTabs?top.getAllTabs():[top]).find(t=>t.session&&t.session.id===item.id);if(found){this.app.selectTab(top);if(top.focus)top.focus(found);return;}}
+            const parameters=await this.profiles.newTabParametersForProfile(item.profile);if(parameters){parameters.inputs.profile.__persistentSession=item.id;this.zone.run(()=>this.app.openNewTab(parameters));}
+        }
+        async closeHeld(item){
+            if(!window.confirm('结束“'+item.profile.name+'”会话？该终端内运行的任务将停止。'))return;
+            try{await persistence.command({action:'end',id:item.id});await this.refresh();}catch(e){this.zone.run(()=>this.error=e.message);}
         }
         async open(p){try{await this.profiles.openNewTabForProfile(p);}catch(e){this.zone.run(()=>this.error=e.message);}}
         openLightOS(i){this.open(profile(i));}
@@ -650,6 +727,7 @@
         <ng-container *ngIf="loggedIn">
         <header class="heading"><div><h1>连接首页</h1><span class="muted">{{username}} · OIDC 已登录</span></div><div class="actions"><button class="btn btn-secondary" [disabled]="loading" (click)="refresh()">{{loading?'正在刷新…':'刷新列表'}}</button><button class="btn btn-primary" (click)="newSSH()">＋ 新建 SSH 连接</button></div></header>
         <div class="banner failure" *ngIf="entryError" role="alert">{{entryError}}</div><div class="banner failure" *ngIf="error" role="alert">{{error}} <button *ngIf="error.includes('OIDC')" class="btn btn-sm btn-secondary" (click)="login()">OIDC 登录</button></div><div class="banner" *ngIf="notice" role="status">{{notice}}</div>
+        <section *ngIf="held.length"><h2>后台会话</h2><p class="muted">关闭页面后会话继续运行，重新打开会自动恢复。结束会话会停止其中的任务。</p><div class="list"><div class="row-item" *ngFor="let item of held"><div><strong>{{item.profile.name}}</strong><div class="description">{{item.exited?'已结束，可查看保留的输出':'运行中'}}</div></div><div class="actions"><button class="btn btn-secondary" (click)="resume(item)">{{item.exited?'查看输出':'回到终端'}}</button><button class="btn btn-outline-danger" (click)="closeHeld(item)">结束会话</button></div></div></div></section>
         <section class="cards" aria-label="选择连接类型">
             <button class="card-button" [disabled]="!local" (click)="open(local)"><strong>LZC OS 本机</strong><span class="muted">直接进入当前微服终端</span><small>管理员可用 · 无需 SSH 密码</small></button>
             <button class="card-button" (click)="panel='lightos'"><strong>LightOS 实例</strong><span class="muted">选择实例，打开终端</span><small>{{lightos.length}} 个服务端实例 · {{clients.length}} 个客户端实例</small></button>
@@ -753,6 +831,7 @@
         attach(tab){
             if(!tab.profile||!['ssh','lightos'].includes(tab.profile.type))return;
             const reconnectCleanup=window.TabbySSHReconnect.install(tab);
+            const persistenceCleanup=installPersistentSSH(tab);
             const target=tab.element&&tab.element.nativeElement;if(!target)return;
             const banner=document.createElement('div'),text=document.createElement('span'),button=document.createElement('button');
             banner.className='tabby-connection-status';banner.setAttribute('role','status');banner.style.cssText='flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:6px 12px;min-height:34px;background:#202936;color:#c3d0e1;font:12px/1.5 system-ui;';
@@ -775,7 +854,7 @@
                         connectedSession=tab.session;
                         requestJSON('/api/1/connections/history/',{action:'touch',profile_id:tab.profile.id}).catch(()=>{});
                     }
-                    set('connected','已连接 · '+(tab.profile.type==='ssh'?tab.profile.options.user+'@'+tab.profile.options.host+':'+(tab.profile.options.port||22):tab.profile.options.kind==='host'?'LZC OS 本机终端':tab.profile.options.kind==='client'?tab.profile.name:'LightOS · '+tab.profile.options.name));
+                    set('connected',(tab.__persistenceNotice?tab.__persistenceNotice+' · ':'已连接 · ')+(tab.profile.type==='ssh'?tab.profile.options.user+'@'+tab.profile.options.host+':'+(tab.profile.options.port||22):tab.profile.options.kind==='host'?'LZC OS 本机终端':tab.profile.options.kind==='client'?tab.profile.name:'LightOS · '+tab.profile.options.name));
                 }else if(tab.__connectionStatus&&tab.__connectionStatus.state==='connected')set('disconnected',byHand?'连接已断开':'连接已中断，请重新连接');
                 else if((attempting||!tab.__connectionStatus||tab.__connectionStatus.state==='connecting')&&tab.hasFocus){
                     const password=document.querySelector('ngb-modal-window input[type="password"]');
@@ -810,7 +889,7 @@
             const online=()=>{if(!navigator.onLine&&(!tab.session||!tab.session.open))set('disconnected','网络已断开，请恢复网络后重新连接');};
             window.addEventListener('offline',online);
             this.subscribeUntilDetached(tab,tab.sessionChanged$.subscribe(update));
-            tab.__statusCleanup=()=>{stopped=true;clearInterval(timer);window.removeEventListener('offline',online);button.removeEventListener('click',click);if(observer)observer.disconnect();if(toolbar)toolbar.style.top=oldToolbarTop;if(pin)pin.style.top=oldPinTop;if(fileButton)fileButton.onclick=null;banner.remove();restorers.reverse().forEach(f=>f());reconnectCleanup();};
+            tab.__statusCleanup=()=>{stopped=true;clearInterval(timer);window.removeEventListener('offline',online);button.removeEventListener('click',click);if(observer)observer.disconnect();if(toolbar)toolbar.style.top=oldToolbarTop;if(pin)pin.style.top=oldPinTop;if(fileButton)fileButton.onclick=null;banner.remove();restorers.reverse().forEach(f=>f());persistenceCleanup();reconnectCleanup();};
         }
         detach(tab){if(tab.__statusCleanup)tab.__statusCleanup();super.detach(tab);}
     }
@@ -901,7 +980,13 @@
             this.app.ready$.subscribe(()=>this.zone.run(async()=>{
                 try{
                     const target=window.TabbyWebShellEntry.target(deepLink);
-                    if(!target){openConnectionHub(this.app);return;}
+                    const held=await persistence.command({action:'list'});
+                    for(const item of held.items){
+                        const p={...item.profile,__persistentSession:item.id};
+                        const parameters=await this.profiles.newTabParametersForProfile(p);
+                        if(parameters){parameters.inputs.profile.__persistentSession=item.id;this.zone.run(()=>this.app.openNewTab(parameters));}
+                    }
+                    if(!target){if(!held.items.length)openConnectionHub(this.app);return;}
                     const selected=await window.TabbyWebShellEntry.resolve(target,instances,()=>requestJSON('/lightos/api/client-instances'));
                     const params=await this.profiles.newTabParametersForProfile(selected.kind==='client'?clientProfile(selected.item):profile(selected.item));
                     if(!params)throw Error('Tabby 无法打开该 LightOS 终端');

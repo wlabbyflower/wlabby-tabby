@@ -102,6 +102,7 @@ async def terminal(ws, path=None, command=None, user=None):
                                 start_new_session=True, env=({'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'TERM': 'xterm-256color', 'HOME': '/root'} if host_mode else dict(os.environ, TERM='xterm-256color')))
         os.close(slave)
         slave = None
+        await ws.send(json.dumps({'type': 'ready'}))
 
         async def output():
             while True:
@@ -167,7 +168,13 @@ async def terminal(ws, path=None, command=None, user=None):
 
 
 async def serve():
-    async with websockets.serve(terminal, '127.0.0.1', 9002, create_protocol=Protocol,
+    broker = manager.access
+    spec = importlib.util.spec_from_file_location('session_broker', Path(__file__).with_name('session-broker.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    owner = module.Broker(terminal, broker)
+    async with websockets.serve(owner.handler, '127.0.0.1', 9004, create_protocol=module.Protocol,
+                                max_size=512*1024, max_queue=8, ping_interval=20, ping_timeout=20), websockets.serve(terminal, '127.0.0.1', 9002, create_protocol=Protocol,
                                 max_size=256*1024, max_queue=8, ping_interval=20, ping_timeout=20):
         await asyncio.Future()
 

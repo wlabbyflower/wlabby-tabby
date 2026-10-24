@@ -4,7 +4,7 @@
 
 基于 [Eugeny](https://github.com/Eugeny) 创建的 [Tabby Web](https://github.com/Eugeny/tabby-web) 的懒猫微服适配项目，集成 LZC OS、LightOS 与 SSH 终端。终端与 Web 服务的基础能力来自原项目，本仓库维护懒猫微服适配和相关功能扩展。
 
-版本 `0.6.6`，应用 ID `cloud.lazycat.app.tabbyweb`。标准 LPK v2 应用：Tabby 原生终端标签、当前微服本机终端、LightOS 实例管理，以及其他设备的 SSH 连接。
+版本 `0.6.7`，应用 ID `cloud.lazycat.app.tabbyweb`。标准 LPK v2 应用：Tabby 原生终端标签、当前微服本机终端、LightOS 实例管理，以及其他设备的 SSH 连接。
 
 仅支持桌面客户端（Windows、macOS、Linux）；包声明不支持 Android、iOS（含 iPad）和 tvOS 智慧屏。
 
@@ -28,6 +28,16 @@
 
 LZC OS 和 LightOS 入口仅微服管理员可用。进入本机终端前须完成 Tabby 的微服 OIDC 登录；未登录时显示明确提示。应用不内置任何用户设备、实例或连接配置。`/lightos/` 仅提供原生管理页面的入口，不再维护另一套容器管理表单。切换标签不重新加载其他会话。
 
+## 关闭页面后继续使用终端
+
+直接关闭页面或刷新，终端在微服中继续运行。重新打开应用并使用同一微服账号登录后，会自动恢复终端标签、接回原会话，并补回关页期间的输出；当前目录、环境变量及正在运行的命令仍在。
+
+连接首页的“后台会话”可以回到已有终端，也可以结束不再需要的会话。主动点击“断开连接”“结束会话”或关闭终端标签会结束对应会话；“重新连接”会结束旧会话并创建新连接。另一页面接入同一会话时，原页面会断开显示，后台任务继续运行。
+
+支持普通直连 SSH 的密码、私钥认证，LZC OS 本机，以及 LightOS 服务端和客户端终端。代理、跳板机及其他 SSH 认证方式保留原连接模式，状态栏会提示暂不支持后台托管。SFTP 按需建立独立连接，关闭页面仍会结束正在传输的文件，请等待传输完成后再关页。
+
+每账号最多保留 8 个运行中的会话，应用内最多 32 个会话记录。每个会话保留最近 2 MiB 输出，超过后只恢复末尾内容；已结束记录在 24 小时后清理。会话和输出只保存在服务内存，不写入日志或数据库。应用停止、重启、升级，或者目标设备断开，都会中断会话；这项功能不能恢复升级前的运行中会话。升级后新建的会话开始使用后台托管。
+
 ## 文件传输
 
 SSH 设备继续使用原生 **SFTP** 面板。LZC OS 本机、LightOS 服务端实例和客户端实例可点击终端状态栏的 **文件传输**，或在终端右键菜单中打开。
@@ -43,7 +53,7 @@ LightOS 容器文件助手通过标准输入临时传入并运行，结束后清
 
 ## SSH 重新连接
 
-点击状态栏、右键菜单或原生工具栏的重新连接，都会重新建立当前标签的 SSH 连接，保存的密码照常使用。连续点击合并为一次操作；其他仍使用共享连接的标签不主动关闭。底层网关关闭会同步关闭上层 SSH 会话，状态不会停留在“已连接”。
+点击状态栏、右键菜单或原生工具栏的重新连接，都会重新建立当前标签的 SSH 连接，保存的密码照常使用。连续点击合并为一次操作；其他仍使用共享连接的标签不主动关闭。底层网关关闭会清理对应的原生 SSH / SFTP 连接；已经托管的终端由独立后台连接维持。
 
 ## LightOS WebShell 接入
 
@@ -125,6 +135,7 @@ lzc-cli lpk info tabby-web-0.6.2.lpk
 ## 实现与边界
 
 - `content/tabby-lightos/`：Tabby 原生插件、动态连接配置、管理标签、心跳和 SSH 新建表单。
+- `content/session-broker.py`、`native/ssh-worker/`：账号隔离的后台会话、输出回放及后台 SSH shell。
 - `content/lightos-manager.py`：管理员 API、原生 LightOS 管理入口发现及兼容管理接口。
 - `content/lightos-terminal.py`：管理员 WebSocket 与 PTY，支持双向输入输出、Ctrl+C、尺寸同步、登录用户选择，最多同时打开 8 个 LightOS 终端。
 - `content/host-terminal.py`、`terminal-access.py`、`pty-shell.py`：独立宿主终端、一次性授权与控制终端分配。
@@ -181,3 +192,5 @@ docker run --rm -e TABBY_MANAGER_FIXTURE=1 \
 ```
 
 先按前文构建原生助手，测试不使用真实实例或设备凭据。
+
+后台会话回归：`tests/test_session_broker.py` 在随包 Python 3.7 中验证关页、补回输出、账号隔离、主动结束与输出上限；`tests/browser-persistence.cjs` 使用隔离容器、真实随包 xterm 和临时 SSH 服务，验证自动恢复、SSH shell、本机与 LightOS shell 的 PID/环境保持、关页期间任务继续、SFTP 及重连。`tests/test_ssh_worker.cjs` 验证后台 SSH 的密码、私钥、主机密钥拒绝、字节流及尺寸同步。测试客户端 API 与宿主入口使用隔离测试环境，不接入真实宿主命名空间。原有针对旧终端 URL 的浏览器脚本保留为历史版本回归，新版会话入口以 `browser-persistence.cjs` 为准。
