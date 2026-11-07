@@ -7,23 +7,32 @@
     function install(tab){
         const frontend=tab.frontend,xterm=frontend&&frontend.xterm;if(!xterm)return ()=>{};
         const host=tab.content.nativeElement,doc=host.ownerDocument,win=doc.defaultView;
-        let fingerprint='',disposed=false;
+        let fingerprint='',disposed=false,backgroundValue={enabled:false};
+        const oldStyle={image:host.style.backgroundImage,size:host.style.backgroundSize,position:host.style.backgroundPosition,repeat:host.style.backgroundRepeat};
+        let reportedBackground=[23,27,34];
         function apply(){
             if(disposed)return;
             const options=tab.config.store.terminal,scheme=options.colorScheme;
             let background=options.background==='colorScheme'?scheme.background:null;
             if(!rgb(background)){for(let node=host;node;node=node.parentElement){const value=win.getComputedStyle(node).backgroundColor;if(rgb(value)){background=value;break;}}}
             if(!rgb(background))background=rgb(scheme.background)?scheme.background:'#171b22';
+            const image=backgroundValue.enabled&&backgroundValue.hasImage&&backgroundValue.url;
+            const base=rgb(background);reportedBackground=base;
+            if(image){
+                const opacity=Math.max(.65,Math.min(.95,Number(backgroundValue.shade)/100));
+                host.style.backgroundImage='linear-gradient(rgba('+base.join(',')+','+opacity+'),rgba('+base.join(',')+','+opacity+')),url("'+backgroundValue.url+'")';
+                host.style.backgroundSize=backgroundValue.fit==='stretch'?'100% 100%':backgroundValue.fit==='contain'?'contain':'cover';host.style.backgroundPosition='center';host.style.backgroundRepeat='no-repeat';
+            }else{host.style.backgroundImage=oldStyle.image;host.style.backgroundSize=oldStyle.size;host.style.backgroundPosition=oldStyle.position;host.style.backgroundRepeat=oldStyle.repeat;}
             let foreground=scheme.foreground||'#d9e0ec';
             const back=rgb(background);
             if(!rgb(foreground)||contrast(rgb(foreground),back)<4.5)foreground=contrast([255,255,255],back)>=contrast([0,0,0],back)?'#ffffff':'#000000';
-            const theme={background,foreground,cursor:scheme.cursor||foreground,cursorAccent:scheme.cursorAccent||background,selectionBackground:scheme.selection||'#66778888',selectionForeground:scheme.selectionForeground||undefined};
+            const theme={background:image?'rgba('+base.join(',')+',0)':background,foreground,cursor:scheme.cursor||foreground,cursorAccent:scheme.cursorAccent||background,selectionBackground:scheme.selection||'#66778888',selectionForeground:scheme.selectionForeground||undefined};
             colors.forEach((name,i)=>{if(scheme.colors&&scheme.colors[i])theme[name]=scheme.colors[i];});
             const next=JSON.stringify(theme);
             // The shipped frontend still checks the removed _colorManager field.
             // Assign current xterm options directly, including an opaque OSC background.
             if(next!==fingerprint){fingerprint=next;xterm.options.theme=theme;}
-            const minimum=Math.max(4.5,Number(options.minimumContrastRatio)||0);
+            const minimum=Math.max(image?9:4.5,Number(options.minimumContrastRatio)||0);
             if(xterm.options.minimumContrastRatio!==minimum)xterm.options.minimumContrastRatio=minimum;
         }
         const native=frontend.configureColors;
@@ -31,8 +40,10 @@
         const refresh=()=>{if(doc.hidden||!tab.hasFocus)return;apply();xterm.refresh(0,xterm.rows-1);};
         win.addEventListener('focus',refresh);doc.addEventListener('visibilitychange',refresh);
         const subscription=tab.focused$&&tab.focused$.subscribe(refresh);
+        const backgroundCleanup=root.TabbyTerminalBackground?root.TabbyTerminalBackground.subscribe(value=>{backgroundValue=value;apply();}):()=>{};
+        const osc=xterm.parser&&xterm.parser.registerOscHandler(11,data=>{if(data==='?'&&backgroundValue.enabled&&backgroundValue.hasImage){tab.sendInput('\x1b]11;rgb:'+reportedBackground.map(n=>n.toString(16).padStart(2,'0').repeat(2)).join('/')+'\x1b\\');return true;}return false;});
         apply();
-        return ()=>{disposed=true;if(native)frontend.configureColors=native;if(subscription)subscription.unsubscribe();win.removeEventListener('focus',refresh);doc.removeEventListener('visibilitychange',refresh);};
+        return ()=>{disposed=true;backgroundCleanup();if(osc)osc.dispose();host.style.backgroundImage=oldStyle.image;host.style.backgroundSize=oldStyle.size;host.style.backgroundPosition=oldStyle.position;host.style.backgroundRepeat=oldStyle.repeat;if(native)frontend.configureColors=native;if(subscription)subscription.unsubscribe();win.removeEventListener('focus',refresh);doc.removeEventListener('visibilitychange',refresh);};
     }
     // Batch output independently of Angular and preserve split UTF-8 characters.
     function batch(emit,win,Buffer){

@@ -12,10 +12,9 @@ for path in Path('/app-dist').glob('*/tabby-ssh/dist/index.js'):
         value = value.replace(marker, '  "LazycatSSHTab": () => SSHTabComponent,\n' + marker, 1)
         path.write_text(value)
 
-# The browser plugin loader is available before third-party modules bootstrap.
+# Remove the retired third-party loader if a writable app-dist survives startup.
 for path in Path('/app-dist').glob('*/tabby-web-container/dist/preload.js'):
     marker = '/* lazycat-plugin-loader */'
     value = path.read_text()
     if marker in value:
-        value = value.split(marker, 1)[0]
-    path.write_text(value + '\n' + marker + '\n' + Path(__file__).with_name('plugin-loader.js').read_text())
+        path.write_text(value.split(marker, 1)[0])

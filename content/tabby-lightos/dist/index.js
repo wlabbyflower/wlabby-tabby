@@ -397,23 +397,32 @@
     function install(tab){
         const frontend=tab.frontend,xterm=frontend&&frontend.xterm;if(!xterm)return ()=>{};
         const host=tab.content.nativeElement,doc=host.ownerDocument,win=doc.defaultView;
-        let fingerprint='',disposed=false;
+        let fingerprint='',disposed=false,backgroundValue={enabled:false};
+        const oldStyle={image:host.style.backgroundImage,size:host.style.backgroundSize,position:host.style.backgroundPosition,repeat:host.style.backgroundRepeat};
+        let reportedBackground=[23,27,34];
         function apply(){
             if(disposed)return;
             const options=tab.config.store.terminal,scheme=options.colorScheme;
             let background=options.background==='colorScheme'?scheme.background:null;
             if(!rgb(background)){for(let node=host;node;node=node.parentElement){const value=win.getComputedStyle(node).backgroundColor;if(rgb(value)){background=value;break;}}}
             if(!rgb(background))background=rgb(scheme.background)?scheme.background:'#171b22';
+            const image=backgroundValue.enabled&&backgroundValue.hasImage&&backgroundValue.url;
+            const base=rgb(background);reportedBackground=base;
+            if(image){
+                const opacity=Math.max(.65,Math.min(.95,Number(backgroundValue.shade)/100));
+                host.style.backgroundImage='linear-gradient(rgba('+base.join(',')+','+opacity+'),rgba('+base.join(',')+','+opacity+')),url("'+backgroundValue.url+'")';
+                host.style.backgroundSize=backgroundValue.fit==='stretch'?'100% 100%':backgroundValue.fit==='contain'?'contain':'cover';host.style.backgroundPosition='center';host.style.backgroundRepeat='no-repeat';
+            }else{host.style.backgroundImage=oldStyle.image;host.style.backgroundSize=oldStyle.size;host.style.backgroundPosition=oldStyle.position;host.style.backgroundRepeat=oldStyle.repeat;}
             let foreground=scheme.foreground||'#d9e0ec';
             const back=rgb(background);
             if(!rgb(foreground)||contrast(rgb(foreground),back)<4.5)foreground=contrast([255,255,255],back)>=contrast([0,0,0],back)?'#ffffff':'#000000';
-            const theme={background,foreground,cursor:scheme.cursor||foreground,cursorAccent:scheme.cursorAccent||background,selectionBackground:scheme.selection||'#66778888',selectionForeground:scheme.selectionForeground||undefined};
+            const theme={background:image?'rgba('+base.join(',')+',0)':background,foreground,cursor:scheme.cursor||foreground,cursorAccent:scheme.cursorAccent||background,selectionBackground:scheme.selection||'#66778888',selectionForeground:scheme.selectionForeground||undefined};
             colors.forEach((name,i)=>{if(scheme.colors&&scheme.colors[i])theme[name]=scheme.colors[i];});
             const next=JSON.stringify(theme);
             // The shipped frontend still checks the removed _colorManager field.
             // Assign current xterm options directly, including an opaque OSC background.
             if(next!==fingerprint){fingerprint=next;xterm.options.theme=theme;}
-            const minimum=Math.max(4.5,Number(options.minimumContrastRatio)||0);
+            const minimum=Math.max(image?9:4.5,Number(options.minimumContrastRatio)||0);
             if(xterm.options.minimumContrastRatio!==minimum)xterm.options.minimumContrastRatio=minimum;
         }
         const native=frontend.configureColors;
@@ -421,8 +430,10 @@
         const refresh=()=>{if(doc.hidden||!tab.hasFocus)return;apply();xterm.refresh(0,xterm.rows-1);};
         win.addEventListener('focus',refresh);doc.addEventListener('visibilitychange',refresh);
         const subscription=tab.focused$&&tab.focused$.subscribe(refresh);
+        const backgroundCleanup=root.TabbyTerminalBackground?root.TabbyTerminalBackground.subscribe(value=>{backgroundValue=value;apply();}):()=>{};
+        const osc=xterm.parser&&xterm.parser.registerOscHandler(11,data=>{if(data==='?'&&backgroundValue.enabled&&backgroundValue.hasImage){tab.sendInput('\x1b]11;rgb:'+reportedBackground.map(n=>n.toString(16).padStart(2,'0').repeat(2)).join('/')+'\x1b\\');return true;}return false;});
         apply();
-        return ()=>{disposed=true;if(native)frontend.configureColors=native;if(subscription)subscription.unsubscribe();win.removeEventListener('focus',refresh);doc.removeEventListener('visibilitychange',refresh);};
+        return ()=>{disposed=true;backgroundCleanup();if(osc)osc.dispose();host.style.backgroundImage=oldStyle.image;host.style.backgroundSize=oldStyle.size;host.style.backgroundPosition=oldStyle.position;host.style.backgroundRepeat=oldStyle.repeat;if(native)frontend.configureColors=native;if(subscription)subscription.unsubscribe();win.removeEventListener('focus',refresh);doc.removeEventListener('visibilitychange',refresh);};
     }
     // Batch output independently of Angular and preserve split UTF-8 characters.
     function batch(emit,win,Buffer){
@@ -435,6 +446,26 @@
     if(typeof module==='object'&&module.exports)module.exports=root.TabbyTerminalRendering;
 })(typeof window==='undefined'?globalThis:window);
 
+/* One account-scoped background snapshot shared by every terminal in this frame. */
+(function(root){
+    let value={enabled:false,hasImage:false,fit:'cover',shade:75,url:null},pending=null;const listeners=new Set();
+    function publish(next){value={...next};for(const fn of listeners)fn(value);return value;}
+    async function request(body){
+        const headers={};const cookie=root.parent.document.cookie.split(';').map(x=>x.trim()).find(x=>x.startsWith('XSRF-TOKEN='));
+        if(cookie)headers['X-XSRF-TOKEN']=decodeURIComponent(cookie.slice(11));
+        const multipart=typeof FormData!=='undefined'&&body instanceof FormData;
+        if(body&&!multipart)headers['Content-Type']='application/json';
+        const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),30000);
+        try{
+            const response=await fetch('/api/1/background/',{method:body?'POST':'GET',headers,body:body?(multipart?body:JSON.stringify(body)):undefined,credentials:'same-origin',cache:'no-store',signal:controller.signal});
+            const data=await response.json();if(!response.ok)throw Error(data.error||'背景设置保存失败，请检查登录状态');return publish(data);
+        }finally{clearTimeout(timer);}
+    }
+    function load(){if(!pending)pending=request().finally(()=>pending=null);return pending;}
+    function subscribe(fn){listeners.add(fn);fn(value);load().catch(()=>{});return ()=>listeners.delete(fn);}
+    root.TabbyTerminalBackground={get:()=>value,preview:publish,load,request,subscribe};
+})(window);
+
 /* Tabby plugin: real terminal tabs sharing Tabby's renderer, shortcuts and tab bar. */
 (function () {
     const ng = require('@angular/core');
@@ -442,6 +473,7 @@
     const forms = require('@angular/forms');
     const core = require('tabby-core');
     const terminal = require('tabby-terminal');
+    const settings = require('tabby-settings');
     const Buffer = require('buffer').Buffer;
     const bootstrap = require('@ng-bootstrap/ng-bootstrap');
     // The shipped PromptModal has uninitialised @Input fields; default when the
@@ -738,7 +770,7 @@
         async open(p){try{await this.profiles.openNewTabForProfile(p);}catch(e){this.zone.run(()=>this.error=e.message);}}
         openLightOS(i){this.open(profile(i));}
         openClient(item){this.open(clientProfile(item));}
-        managePlugins(){openPluginManager(this.app);}
+        manageBackground(){openBackgroundSettings(this.app);}
         manageLightOS(){this.app.openNewTab({type:LightOSManagerTab,inputs:{title:'LightOS 管理'}});}
         newSSH(){const ref=this.modal.open(NewSSHConnection);ref.result.then(()=>this.refresh(),()=>{});}
         hasPassword(p){return this.credentials.some(c=>c.service==='ssh@'+p.options.host+':'+(p.options.port||22)&&c.account===p.options.user);}
@@ -779,7 +811,7 @@
     `],template:`<main class="hub">
         <section *ngIf="!loggedIn" class="login-gate"><h1>OIDC 登录</h1><p>先登录微服账号，再打开终端。</p><button class="btn btn-primary" (click)="login()">使用微服账号进行 OIDC 登录 →</button></section>
         <ng-container *ngIf="loggedIn">
-        <header class="heading"><div><h1>连接首页</h1><span class="muted">{{username}} · OIDC 已登录</span></div><div class="actions"><button class="btn btn-secondary" (click)="managePlugins()">插件</button><button class="btn btn-secondary" [disabled]="loading" (click)="refresh()">{{loading?'正在刷新…':'刷新列表'}}</button><button class="btn btn-primary" (click)="newSSH()">＋ 新建 SSH 连接</button></div></header>
+        <header class="heading"><div><h1>连接首页</h1><span class="muted">{{username}} · OIDC 已登录</span></div><div class="actions"><button class="btn btn-secondary" (click)="manageBackground()">背景</button><button class="btn btn-secondary" [disabled]="loading" (click)="refresh()">{{loading?'正在刷新…':'刷新列表'}}</button><button class="btn btn-primary" (click)="newSSH()">＋ 新建 SSH 连接</button></div></header>
         <div class="banner failure" *ngIf="entryError" role="alert">{{entryError}}</div><div class="banner failure" *ngIf="error" role="alert">{{error}} <button *ngIf="error.includes('OIDC')" class="btn btn-sm btn-secondary" (click)="login()">OIDC 登录</button></div><div class="banner" *ngIf="notice" role="status">{{notice}}</div>
         <section *ngIf="held.length"><h2>后台会话</h2><p class="muted">关闭页面后会话继续运行，重新打开会自动恢复。结束会话会停止其中的任务。</p><div class="list"><div class="row-item" *ngFor="let item of held"><div><strong>{{item.profile.name}}</strong><div class="description">{{item.exited?'已结束，可查看保留的输出':'运行中'}}</div></div><div class="actions"><button class="btn btn-secondary" (click)="resume(item)">{{item.exited?'查看输出':'回到终端'}}</button><button class="btn btn-outline-danger" (click)="closeHeld(item)">结束会话</button></div></div></div></section>
         <section class="cards" aria-label="选择连接类型">
@@ -948,37 +980,36 @@
         detach(tab){if(tab.__statusCleanup)tab.__statusCleanup();super.detach(tab);}
     }
 
-    class PluginManager extends core.BaseTabComponent {
-        constructor(zone){super();this.zone=zone;this.installed=[];this.available=[];this.query='';this.name='';this.version='';this.error='';this.notice='';this.busy=false;this.alive=true;this.safe=new URL(window.parent.location.href).searchParams.get('plugins')==='off';this.failures=window.__tabbyPluginErrors||[];}
-        ngOnInit(){this.refresh();}
-        async refresh(){try{const value=await requestJSON('/api/1/plugins/');this.zone.run(()=>{if(this.alive)this.installed=value.items;});}catch(e){this.zone.run(()=>this.error=e.message);}}
-        async search(){if(this.busy)return;this.busy=true;this.error='';try{const value=await requestJSON('/api/1/plugins/?q='+encodeURIComponent(this.query));this.zone.run(()=>this.available=value.items);}catch(e){this.zone.run(()=>this.error=e.message);}finally{this.zone.run(()=>this.busy=false);}}
-        async change(action,name,version=''){
-            if(this.busy)return;this.busy=true;this.error='';this.notice='';
-            try{await requestJSON('/api/1/plugins/',{action,name,version},'POST',120000);await this.refresh();this.zone.run(()=>this.notice='已保存。点击“应用插件更改”重新加载页面后生效，后台终端会话会保留。');}
-            catch(e){this.zone.run(()=>this.error=e.message);}finally{this.zone.run(()=>this.busy=false);}
-        }
-        reload(){const url=new URL(window.parent.location.href);url.searchParams.delete('plugins');window.parent.location.assign(url.href);}
-        safeStart(){window.parent.location.assign('/?plugins=off');}
-        async canClose(){return true;}
-        async getRecoveryToken(){return null;}
-        ngOnDestroy(){this.alive=false;super.ngOnDestroy();}
+    class BackgroundSettings {
+        constructor(zone){this.zone=zone;this.value={...window.TabbyTerminalBackground.get()};this.error='';this.notice='';this.busy=false;this.alive=true;}
+        ngOnInit(){window.TabbyTerminalBackground.load().then(value=>this.zone.run(()=>{if(this.alive)this.value={...value};})).catch(e=>this.zone.run(()=>this.error=e.message));}
+        preview(){window.TabbyTerminalBackground.preview({...this.value,shade:Number(this.value.shade)});this.notice='预览已更新，点击“保存设置”后永久生效。';}
+        async action(body){if(this.busy)return;this.busy=true;this.error='';this.notice='';try{const value=await window.TabbyTerminalBackground.request(body);this.zone.run(()=>{if(this.alive){this.value={...value};this.notice='已保存，所有终端已更新。';}});}catch(e){this.zone.run(()=>this.error=e.message);}finally{this.zone.run(()=>this.busy=false);}}
+        async upload(event){const file=event.target.files[0];event.target.value='';if(!file)return;if(file.size>8*1024*1024){this.error='图片不能超过 8 MiB';return;}const body=new FormData();body.append('image',file);await this.action(body);}
+        save(){return this.action({enabled:!!this.value.enabled,fit:this.value.fit,shade:Number(this.value.shade)});}
+        remove(){return this.action({action:'remove'});}
+        ngOnDestroy(){this.alive=false;window.TabbyTerminalBackground.load().catch(()=>{});}
     }
-    PluginManager.ctorParameters=()=>[{type:ng.NgZone}];
-    ng.Component({selector:'tabby-plugin-manager',styles:[`:host{display:block;overflow:auto;height:100%;padding:28px 36px;background:#151a22;color:#e5ebf4}main{max-width:1050px;margin:auto}.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.row-item{display:flex;justify-content:space-between;align-items:center;padding:16px 0;gap:16px;border-bottom:1px solid #374254}p{color:#b3bfce;line-height:1.7}input{max-width:380px}.notice{padding:14px;background:#263649;margin:16px 0}.error{color:#ffb8bb;white-space:pre-wrap}h2{margin-top:28px}.description{max-width:680px;overflow-wrap:anywhere}small{color:#a0aec1}`],template:`<main>
-        <div class="actions"><h1 class="mr-auto">插件</h1><button class="btn btn-secondary" (click)="safeStart()">禁用第三方插件启动</button><button class="btn btn-primary" (click)="reload()">应用插件更改</button></div>
-        <p>从 Tabby 使用的 npm 插件仓库搜索，也可以填写插件名称和版本安装。插件按当前账号保存。</p>
-        <p>支持完整打包的 JavaScript 插件；依赖 Electron、本机文件系统、原生模块或额外未打包依赖的插件暂不支持。部分新插件可能需要更新的 Tabby 内核。</p>
-        <div *ngIf="safe" class="notice">当前已禁用第三方插件。可以在这里关闭或卸载有问题的插件，再点击“应用插件更改”。</div>
-        <div *ngFor="let item of failures" class="notice error">{{item.name}} 加载失败：{{item.error}}</div>
-        <div *ngIf="error" class="notice error" role="alert">{{error}}</div><div *ngIf="notice" class="notice" role="status">{{notice}}</div>
-        <h2>已安装</h2><p *ngIf="!installed.length">还没有安装第三方插件。</p>
-        <div class="row-item" *ngFor="let item of installed"><div><strong>{{item.name}}</strong> <small>{{item.version}} · {{item.enabled?'已启用':'已禁用'}}</small><div class="description">{{item.description}}</div></div><div class="actions"><button class="btn btn-secondary" [disabled]="busy" (click)="change(item.enabled?'disable':'enable',item.name)">{{item.enabled?'禁用':'启用'}}</button><button class="btn btn-outline-danger" [disabled]="busy" (click)="change('uninstall',item.name)">卸载</button></div></div>
-        <h2>搜索插件仓库</h2><form class="actions" (submit)="search();$event.preventDefault()"><input name="query" class="form-control" [(ngModel)]="query" placeholder="搜索插件名称" aria-label="搜索插件名称"><button class="btn btn-secondary" [disabled]="busy">{{busy?'处理中…':'搜索'}}</button></form>
-        <div class="row-item" *ngFor="let item of available"><div><strong>{{item.name}}</strong> <small>{{item.version}}</small><div class="description">{{item.description}}</div></div><button class="btn btn-primary" [disabled]="busy" (click)="change('install',item.name,item.version)">安装</button></div>
-        <h2>按名称安装</h2><form class="actions" (submit)="change('install',name,version);$event.preventDefault()"><input name="name" class="form-control" [(ngModel)]="name" placeholder="tabby-插件名" aria-label="插件包名" required><input name="version" class="form-control" [(ngModel)]="version" placeholder="版本号，可选" aria-label="插件版本"><button class="btn btn-primary" [disabled]="busy">安装插件</button></form>
-    </main>`})(PluginManager);
-    function openPluginManager(app){for(const top of app.tabs){const found=(top.getAllTabs?top.getAllTabs():[top]).find(t=>t instanceof PluginManager);if(found){app.selectTab(top);if(top.focus)top.focus(found);return found;}}return app.openNewTab({type:PluginManager,inputs:{title:'插件'}});}
+    BackgroundSettings.ctorParameters=()=>[{type:ng.NgZone}];
+    ng.Component({selector:'tabby-background-settings',styles:[`:host{display:block;padding:20px;max-width:1000px;color:inherit}.actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.preview{margin:22px 0;height:240px;background-position:center;background-repeat:no-repeat;position:relative;background-color:#171b22;border-radius:8px;overflow:hidden}.sample{padding:24px;color:#eef3fc;font:15px/1.7 monospace;position:relative;z-index:1;white-space:pre-line}.shade{position:absolute;inset:0;background:#171b22;pointer-events:none}.notice{padding:12px;margin:14px 0;background:#263649;color:#e5ebf4}.error{background:#452c32;color:#ffb8bb}label{display:block;margin:18px 0}select{max-width:300px}input[type=range]{display:block;width:100%;max-width:460px}p{line-height:1.7;opacity:.8}`],template:`<section>
+        <h2>终端背景</h2><p>选择自己的背景图，本机、SSH 和 LightOS 终端都会使用。图片和设置按当前账号保存，重新打开或正常升级后继续保留。</p>
+        <div class="notice error" role="alert" *ngIf="error">{{error}}</div><div class="notice" role="status" *ngIf="notice">{{notice}}</div>
+        <div class="actions"><button class="btn btn-primary" [disabled]="busy" (click)="file.click()">{{busy?'正在保存…':'选择背景图'}}</button><input #file hidden type="file" accept="image/png,image/jpeg,image/webp" (change)="upload($event)"><button class="btn btn-outline-danger" [disabled]="busy||!value.hasImage" (click)="remove()">移除背景图</button></div>
+        <p>支持静态 PNG、JPEG、WebP，最大 8 MiB、1600 万像素。图片只保存在当前应用中。</p>
+        <div class="preview" [style.background-image]="value.enabled&&value.url?'url('+value.url+')':'none'" [style.background-size]="value.fit==='stretch'?'100% 100%':value.fit"><div class="shade" [style.opacity]="value.enabled&&value.url?value.shade/100:1"></div><div class="sample">$ echo Hello\nHello\n$ 正在等待输入…</div></div>
+        <label><input type="checkbox" [(ngModel)]="value.enabled" [disabled]="!value.hasImage||busy" (change)="preview()"> 启用终端背景图</label>
+        <label>显示方式<select class="form-control" [(ngModel)]="value.fit" [disabled]="busy" (change)="preview()"><option value="cover">铺满终端（可能裁剪）</option><option value="contain">完整显示</option><option value="stretch">拉伸填满</option></select></label>
+        <label>遮罩深度：{{value.shade}}%<input type="range" min="65" max="95" step="1" [(ngModel)]="value.shade" [disabled]="busy" (input)="preview()"></label><p>数值越大，图片越暗，文字越清楚。遮罩保留一定深度，避免 Agent 输入区文字被背景盖住。</p>
+        <button class="btn btn-primary" [disabled]="busy" (click)="save()">保存设置</button>
+    </section>`})(BackgroundSettings);
+    class BackgroundSettingsProvider extends settings.SettingsTabProvider {
+        constructor(){super();this.id='terminal-background';this.title='终端背景';this.icon='fas fa-image';this.weight=30;}
+        getComponentType(){return BackgroundSettings;}
+    }
+    function openBackgroundSettings(app){
+        for(const top of app.tabs){const found=(top.getAllTabs?top.getAllTabs():[top]).find(t=>t instanceof settings.SettingsTabComponent);if(found){found.activeTab='terminal-background';app.selectTab(top);if(top.focus)top.focus(found);return found;}}
+        return app.openNewTab({type:settings.SettingsTabComponent,inputs:{activeTab:'terminal-background'}});
+    }
 
     class ClipboardDialog {
         constructor(modal){this.modal=modal;this.text='';this.copy=false;}
@@ -1114,12 +1145,12 @@
             const side={title:window.parent.document.querySelector('.sidebar')?.style.display==='none'?'显示左侧栏':'隐藏左侧栏',weight:7,
                 icon:'<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 4h18v16H3V4zm2 2v12h4V6H5zm6 0v12h8V6h-8z"/></svg>',
                 click:()=>{const hidden=window.TabbySidebar.toggle(window.parent.document,window.parent.localStorage);window.TabbySidebar.updateHandle(window.parent.document);side.title=hidden?'显示左侧栏':'隐藏左侧栏';}};
-            buttons.push({title:'插件',weight:8,icon:'<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 3h7v7H3zm11 0h7v7h-7zM3 14h7v7H3zm11 0h7v7h-7z"/></svg>',click:()=>openPluginManager(this.app)},side);return buttons;
+            buttons.push({title:'背景',weight:8,icon:'<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 3h7v7H3zm11 0h7v7h-7zM3 14h7v7H3zm11 0h7v7h-7z"/></svg>',click:()=>openBackgroundSettings(this.app)},side);return buttons;
         }
     }
     class LightOSModule {}
-    ng.NgModule({imports:[common.CommonModule, forms.FormsModule, terminal.default,bootstrap.NgbModule], declarations:[PluginManager,FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog], entryComponents:[PluginManager,FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog],
-        providers:[{provide:terminal.TerminalDecorator,useFactory:(z,m)=>new ConnectionStatusDecorator(z,m),deps:[ng.NgZone,bootstrap.NgbModal],multi:true},{provide:terminal.TerminalDecorator,useFactory:(m,z)=>new BrowserTerminalDecorator(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabContextMenuItemProvider,useFactory:(m,z)=>new TerminalActionsMenu(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabRecoveryProvider,useClass:LightOSRecovery,multi:true},{provide:core.ProfileProvider,useClass:LightOSProfiles,multi:true},
+    ng.NgModule({imports:[common.CommonModule, forms.FormsModule, terminal.default,bootstrap.NgbModule], declarations:[BackgroundSettings,FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog], entryComponents:[BackgroundSettings,FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog],
+        providers:[{provide:settings.SettingsTabProvider,useFactory:()=>new BackgroundSettingsProvider(),multi:true},{provide:terminal.TerminalDecorator,useFactory:(z,m)=>new ConnectionStatusDecorator(z,m),deps:[ng.NgZone,bootstrap.NgbModal],multi:true},{provide:terminal.TerminalDecorator,useFactory:(m,z)=>new BrowserTerminalDecorator(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabContextMenuItemProvider,useFactory:(m,z)=>new TerminalActionsMenu(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabRecoveryProvider,useClass:LightOSRecovery,multi:true},{provide:core.ProfileProvider,useClass:LightOSProfiles,multi:true},
             {provide:core.ToolbarButtonProvider,useFactory:(p,a,m,z)=>new LightOSToolbar(p,a,m,z),deps:[core.ProfilesService,core.AppService,bootstrap.NgbModal,ng.NgZone],multi:true}]})(LightOSModule);
     module.exports = {default:LightOSModule};
 })();

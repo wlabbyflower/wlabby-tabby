@@ -4,7 +4,7 @@
 
 基于 [Eugeny](https://github.com/Eugeny) 创建的 [Tabby Web](https://github.com/Eugeny/tabby-web) 的懒猫微服适配项目，集成 LZC OS、LightOS 与 SSH 终端。终端与 Web 服务的基础能力来自原项目，本仓库维护懒猫微服适配和相关功能扩展。
 
-版本 `0.6.8`，应用 ID `cloud.lazycat.app.tabbyweb`。标准 LPK v2 应用：Tabby 原生终端标签、当前微服本机终端、LightOS 实例管理，以及其他设备的 SSH 连接。
+版本 `0.6.9`，应用 ID `cloud.lazycat.app.tabbyweb`。标准 LPK v2 应用：Tabby 原生终端标签、当前微服本机终端、LightOS 实例管理，以及其他设备的 SSH 连接。
 
 仅支持桌面客户端（Windows、macOS、Linux）；包声明不支持 Android、iOS（含 iPad）和 tvOS 智慧屏。
 
@@ -36,15 +36,15 @@ LZC OS 和 LightOS 入口仅微服管理员可用。进入本机终端前须完�
 
 输出按批次送入终端，在 Angular 页面更新之外处理；状态栏内容不变时不再重复写入，滚动位置已经正确时不再重复滚动。后台会话与输入输出顺序保持原有行为。
 
-## 插件
+## 终端背景图
 
-点击工具栏或连接首页的“插件”，可以搜索 Tabby 使用的 npm 插件仓库，也可以填写 `tabby-*` / `terminus-*` 包名和完整版本号安装。安装、启用、禁用、卸载后点击“应用插件更改”重新加载页面；已经托管的终端会话继续运行，文件传输请先等待完成。
+打开“设置 → 终端背景”，或点击工具栏、连接首页的“背景”。上传静态 PNG、JPEG、WebP 图片后，本机、SSH 和 LightOS 终端都会即时使用，无需重新连接会话。
 
-支持提供完整 JavaScript 包、依赖当前运行环境和内核 API 的插件。依赖 Electron、本机文件系统、原生模块或额外未打包依赖的桌面插件暂不支持，安装时会说明不兼容的模块。较新的插件可能要求更新的 Tabby 内核，可按版本安装较早的版本。已验证 npm 的 `tabby-theme-snazzy@0.2.0` 能安装并加载。
+支持铺满、完整显示、拉伸；遮罩深度可在 65%–95% 调整，默认 75%，数值越大图片越暗。调整后可即时预览，点击“保存设置”永久保留；也可关闭背景或移除图片。遮罩与文字对比度配合，避免 Agent 输入区的文字被图片盖住。
 
-插件只对当前账号可见，保存在 `/lzcapp/var/plugins`，正常重启和升级后保留。安装包从 npm 官方仓库下载并验证完整性，不运行安装脚本，也不能替换内置插件。第三方插件在当前账号的页面中运行，请选择信任的作者。
+每张图片最大 8 MiB，边长不超过 8192、总像素不超过 1600 万。图片与偏好保存在 `/lzcapp/var/backgrounds`，按当前账号隔离，正常重启和升级后保留。上传文件名不作为服务器路径，不接受 SVG、HTML 或外部图片地址。
 
-若某个插件导致页面无法正常打开，在应用根地址后添加 `?plugins=off`，或点击插件页的“禁用第三方插件启动”。这会保留安装记录并跳过第三方插件，便于关闭或卸载有问题的插件。单个加载失败的插件会被跳过；第三方模块导致初始化失败时会转入该模式。
+第三方插件管理和加载功能已移除，应用不会再加载之前安装的第三方插件。
 
 ## 关闭页面后继续使用终端
 
@@ -213,4 +213,4 @@ docker run --rm -e TABBY_MANAGER_FIXTURE=1 \
 
 后台会话回归：`tests/test_session_broker.py` 在随包 Python 3.7 中验证关页、补回输出、账号隔离、主动结束与输出上限；`tests/browser-persistence.cjs` 使用隔离容器、真实随包 xterm 和临时 SSH 服务，验证自动恢复、SSH shell、本机与 LightOS shell 的 PID/环境保持、关页期间任务继续、SFTP 及重连。`tests/test_ssh_worker.cjs` 验证后台 SSH 的密码、私钥、主机密钥拒绝、字节流及尺寸同步。测试客户端 API 与宿主入口使用隔离测试环境，不接入真实宿主命名空间。原有针对旧终端 URL 的浏览器脚本保留为历史版本回归，新版会话入口以 `browser-persistence.cjs` 为准。
 
-0.6.8 回归：`tests/browser-rendering.cjs` 检查实际 xterm 黑字 / 真彩文字像素、OSC 10/11 颜色回复与高频输出合并；`tests/browser-scroll.cjs` 检查滚动、TUI 鼠标及被动回复；`tests/browser-plugins.cjs` 使用 npm 上的真实插件检查安装、加载、启停、卸载、安全启动、重启后保留和账号隔离。离线插件完整性、回滚与压缩包检查见 `tests/test_plugins.py`。可用 `CHROMIUM_EXECUTABLE` 指定测试浏览器。
+0.6.9 背景回归：`tests/browser-background.cjs` 验证原生设置入口、真实图片上传、终端画布后的图片像素、实时切换、显示方式与遮罩保存、重启后保留、账号隔离及移除；同时确认第三方插件入口和接口已经撤销。
