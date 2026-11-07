@@ -64,20 +64,23 @@
     class PersistentSession extends terminal.BaseSession {
         constructor(injector,p,id,auth){
             super(injector.get(core.LogService).create('persistent-terminal'));
-            this.zone=injector.get(ng.NgZone);this.profile=p;this.id=id;this.auth=auth;this.open=false;this.columns=80;this.rows=24;this.replaying=true;this.lastSequence=0;this.decoder=new TextDecoder();
+            this.zone=injector.get(ng.NgZone);this.profile=p;this.id=id;this.auth=auth;this.open=false;this.columns=80;this.rows=24;this.replaying=true;this.lastSequence=0;this.outputBatch=window.TabbyTerminalRendering.batch(data=>this.emitOutput(data),window,Buffer);
         }
         start(){return new Promise((resolve,reject)=>{
             const ws=this.ws=persistence.socket();let settled=false;
             const timer=setTimeout(()=>{if(!settled){settled=true;reject(Error('后台终端启动超时，请重新连接'));ws.close();}},60000);
             const fail=e=>{if(!settled){settled=true;clearTimeout(timer);reject(e);}};
+            this.zone.runOutsideAngular(()=>{
             ws.onopen=()=>{ws.send(JSON.stringify(this.id?{action:'attach',id:this.id}:{action:'create',profile:this.profile,ssh:this.auth}));this.auth=null;};
-            ws.onmessage=event=>this.zone.run(()=>{
+            ws.onmessage=event=>{
                 const message=JSON.parse(event.data);
                 if(message.type==='attached'){this.id=message.id;return;}
                 if(message.type==='replay-start'){this.replaying=true;if(message.truncated)this.emitOutput(Buffer.from('[仅恢复最近 2 MiB 终端输出]\r\n'));return;}
                 if(message.type==='replay-end'){this.replaying=false;return;}
-                if(message.type==='output'){if(message.seq>this.lastSequence){this.lastSequence=message.seq;this.emitOutput(Buffer.from(this.decoder.decode(Buffer.from(message.data,'base64'),{stream:true})));}return;}
+                if(message.type==='output'){if(message.seq>this.lastSequence){this.lastSequence=message.seq;this.outputBatch.push(Buffer.from(message.data,'base64'));}return;}
                 if(message.type==='pong'){if(this.health)this.health.pong();return;}
+                this.outputBatch.flush();
+                this.zone.run(()=>{
                 if(message.type==='ready'){
                     if(this.open)return;this.open=true;clearTimeout(timer);settled=true;
                     this.resize(this.columns,this.rows);
@@ -86,15 +89,18 @@
                 }
                 if(message.type==='error'){this.emitOutput(Buffer.from('\r\n'+message.error+'\r\n'));fail(Error(message.error));return;}
                 if(message.type==='exit'){this.emitOutput(Buffer.from('\r\n[会话已结束]\r\n'));fail(Error('会话已结束'));this.drop();}
+                });
+            };
+            ws.onerror=()=>this.zone.run(()=>fail(Error('后台终端连接失败，请检查登录状态和网络')));
+            ws.onclose=event=>this.zone.run(()=>{fail(Error(event.code===4001?'此会话已在另一个页面打开':'终端连接已断开'));this.drop();});
             });
-            ws.onerror=()=>fail(Error('后台终端连接失败，请检查登录状态和网络'));
-            ws.onclose=event=>{fail(Error(event.code===4001?'此会话已在另一个页面打开':'终端连接已断开'));this.drop();};
         });}
         resize(columns,rows){this.columns=columns;this.rows=rows;if(this.open&&this.ws&&this.ws.readyState===1)this.ws.send(JSON.stringify({type:'resize',columns,rows}));}
         write(data){if(this.open&&!this.replaying&&this.ws&&this.ws.readyState===1)this.ws.send(data);}
-        async drop(){if(this.health)this.health.stop();await super.destroy();}
+        async drop(){this.outputBatch.close();if(this.health)this.health.stop();await super.destroy();}
         async destroy(){
             if(this.ending)return this.ending;
+            this.outputBatch.close();
             this.ending=(async()=>{if(this.id&&!persistence.isLeaving())await persistence.command({action:'end',id:this.id}).catch(()=>{});if(this.health)this.health.stop();if(this.ws)this.ws.close();await super.destroy();})();
             return this.ending;
         }
@@ -216,6 +222,7 @@
     // @include connection-hub.js
     // @include file-browser.js
     // @include connection-status.js
+    // @include plugin-manager.js
     class ClipboardDialog {
         constructor(modal){this.modal=modal;this.text='';this.copy=false;}
     }
@@ -267,12 +274,13 @@
                 const text=tab.frontend&&tab.frontend.getSelection();if(!text)return;
                 event.preventDefault();event.clipboardData.setData('text/plain',text);
             };
+            const renderCleanup=window.TabbyTerminalRendering.install(tab);
             const scrollCleanup=window.TabbyTerminalScroll.install(tab);
             const host=tab.content&&tab.content.nativeElement;
             const context=event=>{event.preventDefault();event.stopImmediatePropagation();zone.run(()=>tab.buildContextMenu().then(items=>platform.popupContextMenu(items,event)));};
             if(host)host.addEventListener('contextmenu',context,true);
             document.addEventListener('paste',paste,true);document.addEventListener('copy',copy,true);
-            tab.__clipboardCleanup=()=>{scrollCleanup();window.removeEventListener('keydown',keyboardPaste,true);if(host)host.removeEventListener('contextmenu',context,true);document.removeEventListener('paste',paste,true);document.removeEventListener('copy',copy,true);};
+            tab.__clipboardCleanup=()=>{renderCleanup();scrollCleanup();window.removeEventListener('keydown',keyboardPaste,true);if(host)host.removeEventListener('contextmenu',context,true);document.removeEventListener('paste',paste,true);document.removeEventListener('copy',copy,true);};
         }
         detach(tab){if(tab.__clipboardCleanup)tab.__clipboardCleanup();super.detach(tab);}
     }
@@ -349,11 +357,11 @@
             const side={title:window.parent.document.querySelector('.sidebar')?.style.display==='none'?'显示左侧栏':'隐藏左侧栏',weight:7,
                 icon:'<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 4h18v16H3V4zm2 2v12h4V6H5zm6 0v12h8V6h-8z"/></svg>',
                 click:()=>{const hidden=window.TabbySidebar.toggle(window.parent.document,window.parent.localStorage);window.TabbySidebar.updateHandle(window.parent.document);side.title=hidden?'显示左侧栏':'隐藏左侧栏';}};
-            buttons.push(side);return buttons;
+            buttons.push({title:'插件',weight:8,icon:'<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 3h7v7H3zm11 0h7v7h-7zM3 14h7v7H3zm11 0h7v7h-7z"/></svg>',click:()=>openPluginManager(this.app)},side);return buttons;
         }
     }
     class LightOSModule {}
-    ng.NgModule({imports:[common.CommonModule, forms.FormsModule, terminal.default,bootstrap.NgbModule], declarations:[FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog], entryComponents:[FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog],
+    ng.NgModule({imports:[common.CommonModule, forms.FormsModule, terminal.default,bootstrap.NgbModule], declarations:[PluginManager,FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog], entryComponents:[PluginManager,FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog],
         providers:[{provide:terminal.TerminalDecorator,useFactory:(z,m)=>new ConnectionStatusDecorator(z,m),deps:[ng.NgZone,bootstrap.NgbModal],multi:true},{provide:terminal.TerminalDecorator,useFactory:(m,z)=>new BrowserTerminalDecorator(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabContextMenuItemProvider,useFactory:(m,z)=>new TerminalActionsMenu(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabRecoveryProvider,useClass:LightOSRecovery,multi:true},{provide:core.ProfileProvider,useClass:LightOSProfiles,multi:true},
             {provide:core.ToolbarButtonProvider,useFactory:(p,a,m,z)=>new LightOSToolbar(p,a,m,z),deps:[core.ProfilesService,core.AppService,bootstrap.NgbModal,ng.NgZone],multi:true}]})(LightOSModule);
     module.exports = {default:LightOSModule};

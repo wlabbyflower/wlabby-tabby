@@ -1,5 +1,5 @@
 package: cloud.lazycat.app.tabbyweb
-version: 0.6.7
+version: 0.6.8
 name: Tabby 终端
 description: 基于 Tabby 的终端，集成 SSH、LZC OS 本机终端及 LightOS 服务端、客户端实例连接，在一个页面中管理多台设备。
 author: "Eugeny / Lazy Cat 社区移植"
@@ -13,9 +13,11 @@ unsupported_platforms:
 locales:
   zh-CN:
     name: Tabby 终端
+    entries.main.title: Tabby 终端
     description: 基于 Tabby 的终端，集成 SSH、LZC OS 本机终端及 LightOS 服务端、客户端实例连接，在一个页面中管理多台设备。
   en-US:
     name: Tabby Terminal
+    entries.main.title: Tabby Terminal
     description: A Tabby-based terminal integrating SSH, the local LZC OS terminal,
       and LightOS server and client instances to manage multiple devices in one place.
 permissions:

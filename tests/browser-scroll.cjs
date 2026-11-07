@@ -1,10 +1,10 @@
 /* Real shipped xterm renderer under sustained output; all transports are local fixtures. */
 const assert=require('node:assert/strict'),{execFileSync}=require('node:child_process'),fs=require('node:fs');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
-const base=process.env.TEST_BASE_URL||'http://127.0.0.1:28086',container=process.env.TEST_CONTAINER||'tabby-063-ui-test';
+const base=process.env.TEST_BASE_URL||'http://127.0.0.1:28088',container=process.env.TEST_CONTAINER||'tabby-068-ui-test';
 if(!/^tabby-[a-z0-9-]+-ui-test$/.test(container)||!/^http:\/\/127\.0\.0\.1:\d+$/.test(base))throw Error('Use an isolated local UI test container');
 const code='from django.test import Client;from tabby.app.models import User,Config;u,_=User.objects.get_or_create(username="scroll-regression");cfg=Config.objects.create(user=u,name="Scroll fixture",content="{}");u.active_config=cfg;u.save();c=Client();c.force_login(u,backend="django.contrib.auth.backends.ModelBackend");print(c.cookies["sessionid"].value)';
-(async()=>{const browser=await chromium.launch({headless:true,ignoreDefaultArgs:['--hide-scrollbars']});let outputTimer;try{
+(async()=>{const browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_EXECUTABLE,ignoreDefaultArgs:['--hide-scrollbars']});let outputTimer;try{
  const page=await browser.newPage({viewport:{width:1280,height:900}}),errors=[],input=[];let socket;
  page.on('pageerror',e=>errors.push(e.message));
  const session=execFileSync('docker',['exec',container,'sh','-c','exec /venv/*/bin/python /app/manage.py shell -c "$1"','sh',code],{encoding:'utf8'}).trim();
@@ -14,7 +14,7 @@ const code='from django.test import Client;from tabby.app.models import User,Con
  plugin=plugin.replace('attach(tab){','attach(tab){window.__scrollFixtureTab=tab;');
  await page.route('**/tabby-lightos/dist/index.js',r=>r.fulfill({contentType:'application/javascript',body:plugin}));
  await page.route('**/lightos/api/**',r=>r.fulfill({json:r.request().url().includes('local-terminal-ticket')?{ticket:'synthetic-ticket'}:r.request().url().includes('local-terminal')?{mode:'host-terminal'}:[]}));
- await page.routeWebSocket('**/lzc-terminal/**',ws=>{socket=ws;ws.onMessage(m=>{if(typeof m==='string'){if(JSON.parse(m).type==='ping')ws.send('{"type":"pong"}');}else input.push(Buffer.from(m).toString());});});
+ await page.routeWebSocket('**/sessions/',ws=>{let seq=0;socket={send:data=>ws.send(JSON.stringify({type:'output',seq:++seq,data:Buffer.from(data).toString('base64')}))};ws.onMessage(m=>{if(typeof m==='string'){const data=JSON.parse(m);if(data.action==='list')ws.send(JSON.stringify({type:'sessions',items:[]}));else if(data.action==='end')ws.send(JSON.stringify({type:'ended'}));else if(data.action==='create'){ws.send(JSON.stringify({type:'attached',id:'scroll-fixture'}));ws.send(JSON.stringify({type:'replay-end'}));ws.send(JSON.stringify({type:'ready'}));}else if(data.type==='ping')ws.send('{"type":"pong"}');}else input.push(Buffer.from(m).toString());});});
  await page.goto(base);const frameLocator=page.frameLocator('iframe').first();await frameLocator.getByRole('button',{name:'LZC OS 本机终端',exact:true}).click();
  await frameLocator.locator('.xterm-screen').waitFor();const frame=page.frames().find(f=>f.url().endsWith('/terminal'));
  await frame.waitForFunction(()=>window.__scrollFixtureTab&&window.__scrollFixtureTab.frontend&&window.__scrollFixtureTab.frontend.xterm.element);

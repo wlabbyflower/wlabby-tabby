@@ -43,7 +43,7 @@ if (content/'tabby-lightos/dist/gateway-defaults.js').read_text() not in entry.r
     errors.append('Plugin gateway defaults source is out of sync')
 if (content/'tabby-lightos/dist/terminal-actions.js').read_text() not in entry.read_text():
     errors.append('Plugin terminal actions source is out of sync')
-for name in ('sidebar-toggle.js', 'credential-storage.js', 'connection-ui.js', 'terminal-scroll.js', 'webshell-entry.js', 'ssh-reconnect.js', 'file-channel.js', 'persistent-sessions.js'):
+for name in ('sidebar-toggle.js', 'credential-storage.js', 'connection-ui.js', 'terminal-scroll.js', 'webshell-entry.js', 'ssh-reconnect.js', 'file-channel.js', 'persistent-sessions.js', 'terminal-rendering.js'):
     if (content/'tabby-lightos/dist'/name).read_text() not in entry.read_text():
         errors.append('Plugin helper is out of sync: ' + name)
 if errors:

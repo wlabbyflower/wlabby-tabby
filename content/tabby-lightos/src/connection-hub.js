@@ -1,5 +1,5 @@
-    async function requestJSON(path,body,method) {
-        const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
+    async function requestJSON(path,body,method,timeout=15000) {
+        const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeout);
         const headers={'Content-Type':'application/json'};
         const cookie=window.parent.document.cookie.split(';').map(s=>s.trim()).find(s=>s.startsWith('XSRF-TOKEN='));
         if(cookie)headers['X-XSRF-TOKEN']=decodeURIComponent(cookie.slice(11));
@@ -80,6 +80,7 @@
         async open(p){try{await this.profiles.openNewTabForProfile(p);}catch(e){this.zone.run(()=>this.error=e.message);}}
         openLightOS(i){this.open(profile(i));}
         openClient(item){this.open(clientProfile(item));}
+        managePlugins(){openPluginManager(this.app);}
         manageLightOS(){this.app.openNewTab({type:LightOSManagerTab,inputs:{title:'LightOS 管理'}});}
         newSSH(){const ref=this.modal.open(NewSSHConnection);ref.result.then(()=>this.refresh(),()=>{});}
         hasPassword(p){return this.credentials.some(c=>c.service==='ssh@'+p.options.host+':'+(p.options.port||22)&&c.account===p.options.user);}
@@ -120,7 +121,7 @@
     `],template:`<main class="hub">
         <section *ngIf="!loggedIn" class="login-gate"><h1>OIDC 登录</h1><p>先登录微服账号，再打开终端。</p><button class="btn btn-primary" (click)="login()">使用微服账号进行 OIDC 登录 →</button></section>
         <ng-container *ngIf="loggedIn">
-        <header class="heading"><div><h1>连接首页</h1><span class="muted">{{username}} · OIDC 已登录</span></div><div class="actions"><button class="btn btn-secondary" [disabled]="loading" (click)="refresh()">{{loading?'正在刷新…':'刷新列表'}}</button><button class="btn btn-primary" (click)="newSSH()">＋ 新建 SSH 连接</button></div></header>
+        <header class="heading"><div><h1>连接首页</h1><span class="muted">{{username}} · OIDC 已登录</span></div><div class="actions"><button class="btn btn-secondary" (click)="managePlugins()">插件</button><button class="btn btn-secondary" [disabled]="loading" (click)="refresh()">{{loading?'正在刷新…':'刷新列表'}}</button><button class="btn btn-primary" (click)="newSSH()">＋ 新建 SSH 连接</button></div></header>
         <div class="banner failure" *ngIf="entryError" role="alert">{{entryError}}</div><div class="banner failure" *ngIf="error" role="alert">{{error}} <button *ngIf="error.includes('OIDC')" class="btn btn-sm btn-secondary" (click)="login()">OIDC 登录</button></div><div class="banner" *ngIf="notice" role="status">{{notice}}</div>
         <section *ngIf="held.length"><h2>后台会话</h2><p class="muted">关闭页面后会话继续运行，重新打开会自动恢复。结束会话会停止其中的任务。</p><div class="list"><div class="row-item" *ngFor="let item of held"><div><strong>{{item.profile.name}}</strong><div class="description">{{item.exited?'已结束，可查看保留的输出':'运行中'}}</div></div><div class="actions"><button class="btn btn-secondary" (click)="resume(item)">{{item.exited?'查看输出':'回到终端'}}</button><button class="btn btn-outline-danger" (click)="closeHeld(item)">结束会话</button></div></div></div></section>
         <section class="cards" aria-label="选择连接类型">

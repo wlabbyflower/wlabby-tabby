@@ -23,8 +23,8 @@
             if(disposed||!normal()||dragging||restoring)return;
             restoring=true;
             try{
-                if(pinned)bottom.call(frontend);
-                else xterm.scrollToLine(Math.max(0,Math.min(anchor&&!anchor.isDisposed?anchor.line:0,xterm.buffer.active.baseY)));
+                if(pinned){if(xterm.buffer.active.viewportY!==xterm.buffer.active.baseY)bottom.call(frontend);}
+                else {const line=Math.max(0,Math.min(anchor&&!anchor.isDisposed?anchor.line:0,xterm.buffer.active.baseY));if(xterm.buffer.active.viewportY!==line)xterm.scrollToLine(line);}
             }finally{restoring=false;}
         }
         function listen(target,type,fn,options){if(!target)return;target.addEventListener(type,fn,options);listeners.push(()=>target.removeEventListener(type,fn,options));}

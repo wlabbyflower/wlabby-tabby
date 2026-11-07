@@ -181,8 +181,8 @@
             if(disposed||!normal()||dragging||restoring)return;
             restoring=true;
             try{
-                if(pinned)bottom.call(frontend);
-                else xterm.scrollToLine(Math.max(0,Math.min(anchor&&!anchor.isDisposed?anchor.line:0,xterm.buffer.active.baseY)));
+                if(pinned){if(xterm.buffer.active.viewportY!==xterm.buffer.active.baseY)bottom.call(frontend);}
+                else {const line=Math.max(0,Math.min(anchor&&!anchor.isDisposed?anchor.line:0,xterm.buffer.active.baseY));if(xterm.buffer.active.viewportY!==line)xterm.scrollToLine(line);}
             }finally{restoring=false;}
         }
         function listen(target,type,fn,options){if(!target)return;target.addEventListener(type,fn,options);listeners.push(()=>target.removeEventListener(type,fn,options));}
@@ -388,6 +388,53 @@
     root.TabbyPersistentSessions={socket,command,installAuthentication,isLeaving:()=>leaving};
 })(window);
 
+/* Keep xterm's palette, reported colors and visible background in agreement. */
+(function(root){
+    const colors=['black','red','green','yellow','blue','magenta','cyan','white','brightBlack','brightRed','brightGreen','brightYellow','brightBlue','brightMagenta','brightCyan','brightWhite'];
+    function rgb(value){const m=/^#([\da-f]{6})$/i.exec(value||'');if(m)return [0,2,4].map(i=>parseInt(m[1].slice(i,i+2),16));const r=/rgba?\(\s*([\d.]+)[, ]+([\d.]+)[, ]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?/.exec(value||'');return r&&(!r[4]||Number(r[4])===1)?r.slice(1,4).map(Number):null;}
+    function luminance(c){return c.map(v=>{v/=255;return v<=.04045?v/12.92:Math.pow((v+.055)/1.055,2.4);}).reduce((s,v,i)=>s+v*[.2126,.7152,.0722][i],0);}
+    function contrast(a,b){const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);}
+    function install(tab){
+        const frontend=tab.frontend,xterm=frontend&&frontend.xterm;if(!xterm)return ()=>{};
+        const host=tab.content.nativeElement,doc=host.ownerDocument,win=doc.defaultView;
+        let fingerprint='',disposed=false;
+        function apply(){
+            if(disposed)return;
+            const options=tab.config.store.terminal,scheme=options.colorScheme;
+            let background=options.background==='colorScheme'?scheme.background:null;
+            if(!rgb(background)){for(let node=host;node;node=node.parentElement){const value=win.getComputedStyle(node).backgroundColor;if(rgb(value)){background=value;break;}}}
+            if(!rgb(background))background=rgb(scheme.background)?scheme.background:'#171b22';
+            let foreground=scheme.foreground||'#d9e0ec';
+            const back=rgb(background);
+            if(!rgb(foreground)||contrast(rgb(foreground),back)<4.5)foreground=contrast([255,255,255],back)>=contrast([0,0,0],back)?'#ffffff':'#000000';
+            const theme={background,foreground,cursor:scheme.cursor||foreground,cursorAccent:scheme.cursorAccent||background,selectionBackground:scheme.selection||'#66778888',selectionForeground:scheme.selectionForeground||undefined};
+            colors.forEach((name,i)=>{if(scheme.colors&&scheme.colors[i])theme[name]=scheme.colors[i];});
+            const next=JSON.stringify(theme);
+            // The shipped frontend still checks the removed _colorManager field.
+            // Assign current xterm options directly, including an opaque OSC background.
+            if(next!==fingerprint){fingerprint=next;xterm.options.theme=theme;}
+            const minimum=Math.max(4.5,Number(options.minimumContrastRatio)||0);
+            if(xterm.options.minimumContrastRatio!==minimum)xterm.options.minimumContrastRatio=minimum;
+        }
+        const native=frontend.configureColors;
+        if(native)frontend.configureColors=function(...args){const result=native.apply(this,args);apply();return result;};
+        const refresh=()=>{if(doc.hidden||!tab.hasFocus)return;apply();xterm.refresh(0,xterm.rows-1);};
+        win.addEventListener('focus',refresh);doc.addEventListener('visibilitychange',refresh);
+        const subscription=tab.focused$&&tab.focused$.subscribe(refresh);
+        apply();
+        return ()=>{disposed=true;if(native)frontend.configureColors=native;if(subscription)subscription.unsubscribe();win.removeEventListener('focus',refresh);doc.removeEventListener('visibilitychange',refresh);};
+    }
+    // Batch output independently of Angular and preserve split UTF-8 characters.
+    function batch(emit,win,Buffer){
+        let queue=[],bytes=0,timer=null,closed=false;const decoder=new TextDecoder();
+        function flush(){if(timer!==null){win.clearTimeout(timer);timer=null;}if(!bytes)return;const chunk=Buffer.concat(queue,bytes);queue=[];bytes=0;const text=decoder.decode(chunk,{stream:true});if(text)emit(Buffer.from(text));}
+        function push(data){if(closed)return;queue.push(data);bytes+=data.length;if(bytes>=256*1024)flush();else if(timer===null)timer=win.setTimeout(flush,16);}
+        return {push,flush,close(){flush();closed=true;if(timer!==null)win.clearTimeout(timer);}};
+    }
+    root.TabbyTerminalRendering={install,batch,contrast,rgb};
+    if(typeof module==='object'&&module.exports)module.exports=root.TabbyTerminalRendering;
+})(typeof window==='undefined'?globalThis:window);
+
 /* Tabby plugin: real terminal tabs sharing Tabby's renderer, shortcuts and tab bar. */
 (function () {
     const ng = require('@angular/core');
@@ -454,20 +501,23 @@
     class PersistentSession extends terminal.BaseSession {
         constructor(injector,p,id,auth){
             super(injector.get(core.LogService).create('persistent-terminal'));
-            this.zone=injector.get(ng.NgZone);this.profile=p;this.id=id;this.auth=auth;this.open=false;this.columns=80;this.rows=24;this.replaying=true;this.lastSequence=0;this.decoder=new TextDecoder();
+            this.zone=injector.get(ng.NgZone);this.profile=p;this.id=id;this.auth=auth;this.open=false;this.columns=80;this.rows=24;this.replaying=true;this.lastSequence=0;this.outputBatch=window.TabbyTerminalRendering.batch(data=>this.emitOutput(data),window,Buffer);
         }
         start(){return new Promise((resolve,reject)=>{
             const ws=this.ws=persistence.socket();let settled=false;
             const timer=setTimeout(()=>{if(!settled){settled=true;reject(Error('后台终端启动超时，请重新连接'));ws.close();}},60000);
             const fail=e=>{if(!settled){settled=true;clearTimeout(timer);reject(e);}};
+            this.zone.runOutsideAngular(()=>{
             ws.onopen=()=>{ws.send(JSON.stringify(this.id?{action:'attach',id:this.id}:{action:'create',profile:this.profile,ssh:this.auth}));this.auth=null;};
-            ws.onmessage=event=>this.zone.run(()=>{
+            ws.onmessage=event=>{
                 const message=JSON.parse(event.data);
                 if(message.type==='attached'){this.id=message.id;return;}
                 if(message.type==='replay-start'){this.replaying=true;if(message.truncated)this.emitOutput(Buffer.from('[仅恢复最近 2 MiB 终端输出]\r\n'));return;}
                 if(message.type==='replay-end'){this.replaying=false;return;}
-                if(message.type==='output'){if(message.seq>this.lastSequence){this.lastSequence=message.seq;this.emitOutput(Buffer.from(this.decoder.decode(Buffer.from(message.data,'base64'),{stream:true})));}return;}
+                if(message.type==='output'){if(message.seq>this.lastSequence){this.lastSequence=message.seq;this.outputBatch.push(Buffer.from(message.data,'base64'));}return;}
                 if(message.type==='pong'){if(this.health)this.health.pong();return;}
+                this.outputBatch.flush();
+                this.zone.run(()=>{
                 if(message.type==='ready'){
                     if(this.open)return;this.open=true;clearTimeout(timer);settled=true;
                     this.resize(this.columns,this.rows);
@@ -476,15 +526,18 @@
                 }
                 if(message.type==='error'){this.emitOutput(Buffer.from('\r\n'+message.error+'\r\n'));fail(Error(message.error));return;}
                 if(message.type==='exit'){this.emitOutput(Buffer.from('\r\n[会话已结束]\r\n'));fail(Error('会话已结束'));this.drop();}
+                });
+            };
+            ws.onerror=()=>this.zone.run(()=>fail(Error('后台终端连接失败，请检查登录状态和网络')));
+            ws.onclose=event=>this.zone.run(()=>{fail(Error(event.code===4001?'此会话已在另一个页面打开':'终端连接已断开'));this.drop();});
             });
-            ws.onerror=()=>fail(Error('后台终端连接失败，请检查登录状态和网络'));
-            ws.onclose=event=>{fail(Error(event.code===4001?'此会话已在另一个页面打开':'终端连接已断开'));this.drop();};
         });}
         resize(columns,rows){this.columns=columns;this.rows=rows;if(this.open&&this.ws&&this.ws.readyState===1)this.ws.send(JSON.stringify({type:'resize',columns,rows}));}
         write(data){if(this.open&&!this.replaying&&this.ws&&this.ws.readyState===1)this.ws.send(data);}
-        async drop(){if(this.health)this.health.stop();await super.destroy();}
+        async drop(){this.outputBatch.close();if(this.health)this.health.stop();await super.destroy();}
         async destroy(){
             if(this.ending)return this.ending;
+            this.outputBatch.close();
             this.ending=(async()=>{if(this.id&&!persistence.isLeaving())await persistence.command({action:'end',id:this.id}).catch(()=>{});if(this.health)this.health.stop();if(this.ws)this.ws.close();await super.destroy();})();
             return this.ending;
         }
@@ -603,8 +656,8 @@
         <label class="d-block">连接名称<input #name class="form-control" placeholder="可选"></label>
         <div class="text-danger" role="alert">{{error}}</div></div>
         <div class="modal-footer"><button class="btn btn-secondary" type="button" (click)="modal.dismiss()">取消</button><button class="btn btn-primary" [disabled]="busy">保存并连接</button></div></form>`})(NewSSHConnection);
-    async function requestJSON(path,body,method) {
-        const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
+    async function requestJSON(path,body,method,timeout=15000) {
+        const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeout);
         const headers={'Content-Type':'application/json'};
         const cookie=window.parent.document.cookie.split(';').map(s=>s.trim()).find(s=>s.startsWith('XSRF-TOKEN='));
         if(cookie)headers['X-XSRF-TOKEN']=decodeURIComponent(cookie.slice(11));
@@ -685,6 +738,7 @@
         async open(p){try{await this.profiles.openNewTabForProfile(p);}catch(e){this.zone.run(()=>this.error=e.message);}}
         openLightOS(i){this.open(profile(i));}
         openClient(item){this.open(clientProfile(item));}
+        managePlugins(){openPluginManager(this.app);}
         manageLightOS(){this.app.openNewTab({type:LightOSManagerTab,inputs:{title:'LightOS 管理'}});}
         newSSH(){const ref=this.modal.open(NewSSHConnection);ref.result.then(()=>this.refresh(),()=>{});}
         hasPassword(p){return this.credentials.some(c=>c.service==='ssh@'+p.options.host+':'+(p.options.port||22)&&c.account===p.options.user);}
@@ -725,7 +779,7 @@
     `],template:`<main class="hub">
         <section *ngIf="!loggedIn" class="login-gate"><h1>OIDC 登录</h1><p>先登录微服账号，再打开终端。</p><button class="btn btn-primary" (click)="login()">使用微服账号进行 OIDC 登录 →</button></section>
         <ng-container *ngIf="loggedIn">
-        <header class="heading"><div><h1>连接首页</h1><span class="muted">{{username}} · OIDC 已登录</span></div><div class="actions"><button class="btn btn-secondary" [disabled]="loading" (click)="refresh()">{{loading?'正在刷新…':'刷新列表'}}</button><button class="btn btn-primary" (click)="newSSH()">＋ 新建 SSH 连接</button></div></header>
+        <header class="heading"><div><h1>连接首页</h1><span class="muted">{{username}} · OIDC 已登录</span></div><div class="actions"><button class="btn btn-secondary" (click)="managePlugins()">插件</button><button class="btn btn-secondary" [disabled]="loading" (click)="refresh()">{{loading?'正在刷新…':'刷新列表'}}</button><button class="btn btn-primary" (click)="newSSH()">＋ 新建 SSH 连接</button></div></header>
         <div class="banner failure" *ngIf="entryError" role="alert">{{entryError}}</div><div class="banner failure" *ngIf="error" role="alert">{{error}} <button *ngIf="error.includes('OIDC')" class="btn btn-sm btn-secondary" (click)="login()">OIDC 登录</button></div><div class="banner" *ngIf="notice" role="status">{{notice}}</div>
         <section *ngIf="held.length"><h2>后台会话</h2><p class="muted">关闭页面后会话继续运行，重新打开会自动恢复。结束会话会停止其中的任务。</p><div class="list"><div class="row-item" *ngFor="let item of held"><div><strong>{{item.profile.name}}</strong><div class="description">{{item.exited?'已结束，可查看保留的输出':'运行中'}}</div></div><div class="actions"><button class="btn btn-secondary" (click)="resume(item)">{{item.exited?'查看输出':'回到终端'}}</button><button class="btn btn-outline-danger" (click)="closeHeld(item)">结束会话</button></div></div></div></section>
         <section class="cards" aria-label="选择连接类型">
@@ -845,7 +899,7 @@
             const observer=typeof ResizeObserver==='undefined'?null:new ResizeObserver(positionToolbar);
             if(observer)observer.observe(banner);positionToolbar();
             const ui=window.TabbyConnectionUI;let stopped=false,connectedSession=null,attempting=false,byHand=false,restorers=[];
-            const set=(state,detail)=>{if(stopped)return;tab.__connectionStatus={state,detail};banner.dataset.state=state;text.textContent=detail;button.textContent=state==='connected'?'断开连接':'重新连接';button.disabled=state==='connecting';};
+            const set=(state,detail)=>{if(stopped)return;if(tab.__connectionStatus&&tab.__connectionStatus.state===state&&tab.__connectionStatus.detail===detail)return;tab.__connectionStatus={state,detail};banner.dataset.state=state;text.textContent=detail;button.textContent=state==='connected'?'断开连接':'重新连接';button.disabled=state==='connecting';};
             const update=()=>{
                 if(stopped)return;
                 if(tab.connectionError&&(!tab.session||!tab.session.open)){set('disconnected',tab.connectionError);return;}
@@ -885,7 +939,7 @@
                 catch(e){set('disconnected',ui.explain(e.message));}
             });
             button.addEventListener('click',click);set('connecting','正在连接 / 等待认证');update();
-            const timer=setInterval(update,500);
+            const timer=this.zone.runOutsideAngular(()=>setInterval(update,1000));
             const online=()=>{if(!navigator.onLine&&(!tab.session||!tab.session.open))set('disconnected','网络已断开，请恢复网络后重新连接');};
             window.addEventListener('offline',online);
             this.subscribeUntilDetached(tab,tab.sessionChanged$.subscribe(update));
@@ -893,6 +947,38 @@
         }
         detach(tab){if(tab.__statusCleanup)tab.__statusCleanup();super.detach(tab);}
     }
+
+    class PluginManager extends core.BaseTabComponent {
+        constructor(zone){super();this.zone=zone;this.installed=[];this.available=[];this.query='';this.name='';this.version='';this.error='';this.notice='';this.busy=false;this.alive=true;this.safe=new URL(window.parent.location.href).searchParams.get('plugins')==='off';this.failures=window.__tabbyPluginErrors||[];}
+        ngOnInit(){this.refresh();}
+        async refresh(){try{const value=await requestJSON('/api/1/plugins/');this.zone.run(()=>{if(this.alive)this.installed=value.items;});}catch(e){this.zone.run(()=>this.error=e.message);}}
+        async search(){if(this.busy)return;this.busy=true;this.error='';try{const value=await requestJSON('/api/1/plugins/?q='+encodeURIComponent(this.query));this.zone.run(()=>this.available=value.items);}catch(e){this.zone.run(()=>this.error=e.message);}finally{this.zone.run(()=>this.busy=false);}}
+        async change(action,name,version=''){
+            if(this.busy)return;this.busy=true;this.error='';this.notice='';
+            try{await requestJSON('/api/1/plugins/',{action,name,version},'POST',120000);await this.refresh();this.zone.run(()=>this.notice='已保存。点击“应用插件更改”重新加载页面后生效，后台终端会话会保留。');}
+            catch(e){this.zone.run(()=>this.error=e.message);}finally{this.zone.run(()=>this.busy=false);}
+        }
+        reload(){const url=new URL(window.parent.location.href);url.searchParams.delete('plugins');window.parent.location.assign(url.href);}
+        safeStart(){window.parent.location.assign('/?plugins=off');}
+        async canClose(){return true;}
+        async getRecoveryToken(){return null;}
+        ngOnDestroy(){this.alive=false;super.ngOnDestroy();}
+    }
+    PluginManager.ctorParameters=()=>[{type:ng.NgZone}];
+    ng.Component({selector:'tabby-plugin-manager',styles:[`:host{display:block;overflow:auto;height:100%;padding:28px 36px;background:#151a22;color:#e5ebf4}main{max-width:1050px;margin:auto}.actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.row-item{display:flex;justify-content:space-between;align-items:center;padding:16px 0;gap:16px;border-bottom:1px solid #374254}p{color:#b3bfce;line-height:1.7}input{max-width:380px}.notice{padding:14px;background:#263649;margin:16px 0}.error{color:#ffb8bb;white-space:pre-wrap}h2{margin-top:28px}.description{max-width:680px;overflow-wrap:anywhere}small{color:#a0aec1}`],template:`<main>
+        <div class="actions"><h1 class="mr-auto">插件</h1><button class="btn btn-secondary" (click)="safeStart()">禁用第三方插件启动</button><button class="btn btn-primary" (click)="reload()">应用插件更改</button></div>
+        <p>从 Tabby 使用的 npm 插件仓库搜索，也可以填写插件名称和版本安装。插件按当前账号保存。</p>
+        <p>支持完整打包的 JavaScript 插件；依赖 Electron、本机文件系统、原生模块或额外未打包依赖的插件暂不支持。部分新插件可能需要更新的 Tabby 内核。</p>
+        <div *ngIf="safe" class="notice">当前已禁用第三方插件。可以在这里关闭或卸载有问题的插件，再点击“应用插件更改”。</div>
+        <div *ngFor="let item of failures" class="notice error">{{item.name}} 加载失败：{{item.error}}</div>
+        <div *ngIf="error" class="notice error" role="alert">{{error}}</div><div *ngIf="notice" class="notice" role="status">{{notice}}</div>
+        <h2>已安装</h2><p *ngIf="!installed.length">还没有安装第三方插件。</p>
+        <div class="row-item" *ngFor="let item of installed"><div><strong>{{item.name}}</strong> <small>{{item.version}} · {{item.enabled?'已启用':'已禁用'}}</small><div class="description">{{item.description}}</div></div><div class="actions"><button class="btn btn-secondary" [disabled]="busy" (click)="change(item.enabled?'disable':'enable',item.name)">{{item.enabled?'禁用':'启用'}}</button><button class="btn btn-outline-danger" [disabled]="busy" (click)="change('uninstall',item.name)">卸载</button></div></div>
+        <h2>搜索插件仓库</h2><form class="actions" (submit)="search();$event.preventDefault()"><input name="query" class="form-control" [(ngModel)]="query" placeholder="搜索插件名称" aria-label="搜索插件名称"><button class="btn btn-secondary" [disabled]="busy">{{busy?'处理中…':'搜索'}}</button></form>
+        <div class="row-item" *ngFor="let item of available"><div><strong>{{item.name}}</strong> <small>{{item.version}}</small><div class="description">{{item.description}}</div></div><button class="btn btn-primary" [disabled]="busy" (click)="change('install',item.name,item.version)">安装</button></div>
+        <h2>按名称安装</h2><form class="actions" (submit)="change('install',name,version);$event.preventDefault()"><input name="name" class="form-control" [(ngModel)]="name" placeholder="tabby-插件名" aria-label="插件包名" required><input name="version" class="form-control" [(ngModel)]="version" placeholder="版本号，可选" aria-label="插件版本"><button class="btn btn-primary" [disabled]="busy">安装插件</button></form>
+    </main>`})(PluginManager);
+    function openPluginManager(app){for(const top of app.tabs){const found=(top.getAllTabs?top.getAllTabs():[top]).find(t=>t instanceof PluginManager);if(found){app.selectTab(top);if(top.focus)top.focus(found);return found;}}return app.openNewTab({type:PluginManager,inputs:{title:'插件'}});}
 
     class ClipboardDialog {
         constructor(modal){this.modal=modal;this.text='';this.copy=false;}
@@ -945,12 +1031,13 @@
                 const text=tab.frontend&&tab.frontend.getSelection();if(!text)return;
                 event.preventDefault();event.clipboardData.setData('text/plain',text);
             };
+            const renderCleanup=window.TabbyTerminalRendering.install(tab);
             const scrollCleanup=window.TabbyTerminalScroll.install(tab);
             const host=tab.content&&tab.content.nativeElement;
             const context=event=>{event.preventDefault();event.stopImmediatePropagation();zone.run(()=>tab.buildContextMenu().then(items=>platform.popupContextMenu(items,event)));};
             if(host)host.addEventListener('contextmenu',context,true);
             document.addEventListener('paste',paste,true);document.addEventListener('copy',copy,true);
-            tab.__clipboardCleanup=()=>{scrollCleanup();window.removeEventListener('keydown',keyboardPaste,true);if(host)host.removeEventListener('contextmenu',context,true);document.removeEventListener('paste',paste,true);document.removeEventListener('copy',copy,true);};
+            tab.__clipboardCleanup=()=>{renderCleanup();scrollCleanup();window.removeEventListener('keydown',keyboardPaste,true);if(host)host.removeEventListener('contextmenu',context,true);document.removeEventListener('paste',paste,true);document.removeEventListener('copy',copy,true);};
         }
         detach(tab){if(tab.__clipboardCleanup)tab.__clipboardCleanup();super.detach(tab);}
     }
@@ -1027,11 +1114,11 @@
             const side={title:window.parent.document.querySelector('.sidebar')?.style.display==='none'?'显示左侧栏':'隐藏左侧栏',weight:7,
                 icon:'<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 4h18v16H3V4zm2 2v12h4V6H5zm6 0v12h8V6h-8z"/></svg>',
                 click:()=>{const hidden=window.TabbySidebar.toggle(window.parent.document,window.parent.localStorage);window.TabbySidebar.updateHandle(window.parent.document);side.title=hidden?'显示左侧栏':'隐藏左侧栏';}};
-            buttons.push(side);return buttons;
+            buttons.push({title:'插件',weight:8,icon:'<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 3h7v7H3zm11 0h7v7h-7zM3 14h7v7H3zm11 0h7v7h-7z"/></svg>',click:()=>openPluginManager(this.app)},side);return buttons;
         }
     }
     class LightOSModule {}
-    ng.NgModule({imports:[common.CommonModule, forms.FormsModule, terminal.default,bootstrap.NgbModule], declarations:[FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog], entryComponents:[FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog],
+    ng.NgModule({imports:[common.CommonModule, forms.FormsModule, terminal.default,bootstrap.NgbModule], declarations:[PluginManager,FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog], entryComponents:[PluginManager,FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog],
         providers:[{provide:terminal.TerminalDecorator,useFactory:(z,m)=>new ConnectionStatusDecorator(z,m),deps:[ng.NgZone,bootstrap.NgbModal],multi:true},{provide:terminal.TerminalDecorator,useFactory:(m,z)=>new BrowserTerminalDecorator(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabContextMenuItemProvider,useFactory:(m,z)=>new TerminalActionsMenu(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabRecoveryProvider,useClass:LightOSRecovery,multi:true},{provide:core.ProfileProvider,useClass:LightOSProfiles,multi:true},
             {provide:core.ToolbarButtonProvider,useFactory:(p,a,m,z)=>new LightOSToolbar(p,a,m,z),deps:[core.ProfilesService,core.AppService,bootstrap.NgbModal,ng.NgZone],multi:true}]})(LightOSModule);
     module.exports = {default:LightOSModule};

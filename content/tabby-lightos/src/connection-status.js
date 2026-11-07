@@ -17,7 +17,7 @@
             const observer=typeof ResizeObserver==='undefined'?null:new ResizeObserver(positionToolbar);
             if(observer)observer.observe(banner);positionToolbar();
             const ui=window.TabbyConnectionUI;let stopped=false,connectedSession=null,attempting=false,byHand=false,restorers=[];
-            const set=(state,detail)=>{if(stopped)return;tab.__connectionStatus={state,detail};banner.dataset.state=state;text.textContent=detail;button.textContent=state==='connected'?'断开连接':'重新连接';button.disabled=state==='connecting';};
+            const set=(state,detail)=>{if(stopped)return;if(tab.__connectionStatus&&tab.__connectionStatus.state===state&&tab.__connectionStatus.detail===detail)return;tab.__connectionStatus={state,detail};banner.dataset.state=state;text.textContent=detail;button.textContent=state==='connected'?'断开连接':'重新连接';button.disabled=state==='connecting';};
             const update=()=>{
                 if(stopped)return;
                 if(tab.connectionError&&(!tab.session||!tab.session.open)){set('disconnected',tab.connectionError);return;}
@@ -57,7 +57,7 @@
                 catch(e){set('disconnected',ui.explain(e.message));}
             });
             button.addEventListener('click',click);set('connecting','正在连接 / 等待认证');update();
-            const timer=setInterval(update,500);
+            const timer=this.zone.runOutsideAngular(()=>setInterval(update,1000));
             const online=()=>{if(!navigator.onLine&&(!tab.session||!tab.session.open))set('disconnected','网络已断开，请恢复网络后重新连接');};
             window.addEventListener('offline',online);
             this.subscribeUntilDetached(tab,tab.sessionChanged$.subscribe(update));

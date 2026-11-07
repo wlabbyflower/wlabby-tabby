@@ -14,6 +14,10 @@ usage: |
   在连接首页的“已保存密码”中可以替换或删除，仅对当前账号生效。
   导入、导出连接不包含密码或密钥。
 
+  应用从当前设备的 Tabby 域名根路径 `/` 打开，LightOS 管理在应用内进入。
+  工具栏或连接首页的“插件”可以搜索、安装、启用、禁用和卸载兼容的第三方插件。
+  插件变更后重新加载页面生效；依赖 Electron 或本机原生模块的插件暂不支持。
+  若插件导致页面打不开，在根地址后加 `?plugins=off`，再关闭或卸载有问题的插件。
   左侧栏边缘的箭头可以收起、展开侧栏，顶部也保留了侧栏开关。
   终端右键可以复制、粘贴、重新连接、断开连接。
   本机和 LightOS 终端可点击状态栏“文件传输”，SSH 设备使用 SFTP。
@@ -28,9 +32,9 @@ application:
   image: registry.lazycat.cloud/abby/eugeny/tabby-connection-gateway:d9737cecff2904db
   subdomain: tabby
   entries:
-    - id: lightos
-      title: LightOS 管理入口
-      path: /lightos/
+    - id: main
+      title: Tabby 终端
+      path: /
 
   # 微服 OIDC 的回调地址。social_django 在 tabby/urls.py 里挂在
   # api/1/auth/social/ 下，backend 名是 oidc，所以完整路径是 .../complete/oidc/。

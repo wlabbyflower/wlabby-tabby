@@ -36,7 +36,7 @@ const server=new Server({algorithms:{kex:['ecdh-sha2-nistp256']},hostKeys:[gener
  await new Promise(resolve=>server.listen(22227,'127.0.0.1',resolve));
  async function control(message){const ws=new WS('ws://127.0.0.1:29004/',{headers:{'X-HC-User-ID':'persistent-browser-test','X-HC-User-Role':'ADMIN',Origin:'http://127.0.0.1:29004'}});return new Promise((resolve,reject)=>{ws.on('open',()=>ws.send(JSON.stringify(message)));ws.on('message',data=>{ws.close();resolve(JSON.parse(data));});ws.on('error',reject);});}
  for(const item of (await control({action:'list'})).items)await control({action:'end',id:item.id});
- const browser=await chromium.launch({headless:true}),errors=[];
+ const browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_EXECUTABLE}),errors=[];
  try{
   const context=await browser.newContext({permissions:['clipboard-read','clipboard-write']});
   const plugin=require('node:fs').readFileSync(require('node:path').join(__dirname,'../content/tabby-lightos/dist/index.js'),'utf8').replace('attach(tab){','attach(tab){window.__activeTestTab=tab;');
