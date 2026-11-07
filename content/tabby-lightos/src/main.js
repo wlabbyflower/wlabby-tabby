@@ -150,7 +150,7 @@
     const nativeSSHTab=require('tabby-ssh').LazycatSSHTab;
     if(nativeSSHTab){const init=nativeSSHTab.prototype.ngOnInit;nativeSSHTab.prototype.ngOnInit=function(...args){installPersistentSSH(this);return init.apply(this,args);};}
     class LightOSTab extends terminal.BaseTerminalTabComponent {
-        constructor(injector) { super(injector); this.lightosInjector = injector; }
+        constructor(injector) { super(injector); this.lightosInjector = injector; this.enableToolbar=true; }
         ngOnInit() {
             super.ngOnInit();
             this.startLightOS();
@@ -165,12 +165,13 @@
         }
         async disconnect() { this.lightosAttempt=(this.lightosAttempt||0)+1;if(this.session)await this.session.destroy(); }
         async reconnect() { await this.disconnect();await this.startLightOS();if(this.frontend)this.frontend.focus(); }
+        openFileBrowser(){return openFiles(this,this.lightosInjector.get(bootstrap.NgbModal),this.zone);}
         async canClose() { return true; }
         getRecoveryToken() { return Promise.resolve(null); }
     }
     LightOSTab.ctorParameters = () => [{type: ng.Injector}];
     ng.Input()(LightOSTab.prototype, 'profile');
-    ng.Component({selector:'lightos-terminal-tab', template:terminal.BaseTerminalTabComponent.template,
+    ng.Component({selector:'lightos-terminal-tab', template:terminal.BaseTerminalTabComponent.template+`<terminal-toolbar [tab]="this"><button class="btn btn-sm btn-link mr-2" (click)="reconnect()">重新连接</button><button class="btn btn-sm btn-link mr-2" (click)="openFileBrowser()">文件传输</button></terminal-toolbar>`,
         styles:terminal.BaseTerminalTabComponent.styles, animations:terminal.BaseTerminalTabComponent.animations})(LightOSTab);
     class LightOSManagerTab extends core.BaseTabComponent {
         async canClose() { return true; }
@@ -222,7 +223,7 @@
         <div class="modal-footer"><button class="btn btn-secondary" type="button" (click)="modal.dismiss()">取消</button><button class="btn btn-primary" [disabled]="busy">保存并连接</button></div></form>`})(NewSSHConnection);
     // @include connection-hub.js
     // @include file-browser.js
-    // @include connection-status.js
+    // @include connection-lifecycle.js
     // @include background-settings.js
     class ClipboardDialog {
         constructor(modal){this.modal=modal;this.text='';this.copy=false;}
@@ -363,7 +364,7 @@
     }
     class LightOSModule {}
     ng.NgModule({imports:[common.CommonModule, forms.FormsModule, terminal.default,bootstrap.NgbModule], declarations:[BackgroundSettings,FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog], entryComponents:[BackgroundSettings,FileBrowser,LightOSTab,LightOSManagerTab,NewSSHConnection,ClipboardDialog,ConnectionHub,SavedPasswordDialog],
-        providers:[{provide:settings.SettingsTabProvider,useFactory:()=>new BackgroundSettingsProvider(),multi:true},{provide:terminal.TerminalDecorator,useFactory:(z,m)=>new ConnectionStatusDecorator(z,m),deps:[ng.NgZone,bootstrap.NgbModal],multi:true},{provide:terminal.TerminalDecorator,useFactory:(m,z)=>new BrowserTerminalDecorator(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabContextMenuItemProvider,useFactory:(m,z)=>new TerminalActionsMenu(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabRecoveryProvider,useClass:LightOSRecovery,multi:true},{provide:core.ProfileProvider,useClass:LightOSProfiles,multi:true},
+        providers:[{provide:settings.SettingsTabProvider,useFactory:()=>new BackgroundSettingsProvider(),multi:true},{provide:terminal.TerminalDecorator,useFactory:(z,m)=>new ConnectionLifecycleDecorator(z),deps:[ng.NgZone],multi:true},{provide:terminal.TerminalDecorator,useFactory:(m,z)=>new BrowserTerminalDecorator(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabContextMenuItemProvider,useFactory:(m,z)=>new TerminalActionsMenu(m,z),deps:[bootstrap.NgbModal,ng.NgZone],multi:true},{provide:core.TabRecoveryProvider,useClass:LightOSRecovery,multi:true},{provide:core.ProfileProvider,useClass:LightOSProfiles,multi:true},
             {provide:core.ToolbarButtonProvider,useFactory:(p,a,m,z)=>new LightOSToolbar(p,a,m,z),deps:[core.ProfilesService,core.AppService,bootstrap.NgbModal,ng.NgZone],multi:true}]})(LightOSModule);
     module.exports = {default:LightOSModule};
 })();

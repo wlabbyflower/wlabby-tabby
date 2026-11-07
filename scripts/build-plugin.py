@@ -13,7 +13,7 @@ for name in helpers:
     subprocess.run(['node', '--check', str(source / name)], check=True)
     (output / name).write_text((source / name).read_text())
 main = (source / 'main.js').read_text()
-for name in ('connection-hub.js', 'file-browser.js', 'connection-status.js', 'background-settings.js'):
+for name in ('connection-hub.js', 'file-browser.js', 'connection-lifecycle.js', 'background-settings.js'):
     main = main.replace('    // @include ' + name, (source / name).read_text())
 (output / 'index.js').write_text(''.join((source / name).read_text() + '\n' for name in helpers) + main)
 subprocess.run(['node', '--check', str(output / 'index.js')], check=True)

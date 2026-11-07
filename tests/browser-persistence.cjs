@@ -39,7 +39,7 @@ const server=new Server({algorithms:{kex:['ecdh-sha2-nistp256']},hostKeys:[gener
  const browser=await chromium.launch({headless:true,executablePath:process.env.CHROMIUM_EXECUTABLE}),errors=[];
  try{
   const context=await browser.newContext({permissions:['clipboard-read','clipboard-write']});
-  const plugin=require('node:fs').readFileSync(require('node:path').join(__dirname,'../content/tabby-lightos/dist/index.js'),'utf8').replace('attach(tab){','attach(tab){window.__activeTestTab=tab;');
+  const plugin=require('node:fs').readFileSync(require('node:path').join(__dirname,'../content/tabby-lightos/dist/index.js'),'utf8').replace('attach(tab){','attach(tab){window.__activeTestTab=tab;(window.__testTabs||(window.__testTabs=[])).push(tab);');
   await context.route('**/tabby-lightos/dist/index.js',r=>r.fulfill({contentType:'application/javascript',body:plugin}));
   await context.addCookies([{name:'sessionid',value:session,url:base},{name:'XSRF-TOKEN',value:'abcdefghijklmnopqrstuvwxyzABCDEF',url:base}]);
   await context.route('**/lightos/api/**',route=>{const path=new URL(route.request().url()).pathname;return route.fulfill({json:path.endsWith('instances')&&!path.includes('client-')?[{name:'fixture',owner_deploy_id:'test.owner',status:'running'}]:path.endsWith('client-instances')?[]:{mode:'host-terminal'}});});
@@ -49,19 +49,20 @@ const server=new Server({algorithms:{kex:['ecdh-sha2-nistp256']},hostKeys:[gener
   }
   await context.routeWebSocket('**/sessions/',route=>proxy(route,'ws://127.0.0.1:29004/',{'X-HC-User-ID':'persistent-browser-test','X-HC-User-Role':'ADMIN',Origin:'http://127.0.0.1:29004'}));
   await context.routeWebSocket('**/gateway/',route=>proxy(route,'ws://127.0.0.1:29002/'));
-  async function load(){const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());await page.goto(base);await page.frameLocator('iframe').first().locator('tabby-connection-hub h1, .tabby-connection-status').first().waitFor();const frame=page.frames().find(f=>f.url().endsWith('/terminal'));await frame.evaluate(()=>{const base=window.require('tabby-terminal').BaseTerminalTabComponent.prototype,write=base.write;base.write=function(value,...args){window.__activeTestTab=this;return write.call(this,value,...args);};});return {page,frame};}
+  async function load(){const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());await page.goto(base);await page.frameLocator('iframe').first().locator('tabby-connection-hub h1, .xterm-screen').first().waitFor();const frame=page.frames().find(f=>f.url().endsWith('/terminal'));await frame.evaluate(()=>{const base=window.require('tabby-terminal').BaseTerminalTabComponent.prototype,write=base.write;base.write=function(value,...args){window.__activeTestTab=this;return write.call(this,value,...args);};});return {page,frame};}
   let {page,frame}=await load();
   await frame.getByRole('button',{name:'新建 SSH 连接',exact:true}).click();const form=frame.locator('lightos-new-ssh');
   await form.getByPlaceholder('设备 IP 或主机名').fill('127.0.0.1');await form.locator('input[type=number]').fill('22227');await form.getByPlaceholder('设备用户名').fill('tester');await form.locator('input[autocomplete=new-password]').fill('synthetic-password');await form.getByPlaceholder('可选',{exact:true}).fill('Persistent SSH');await form.getByRole('button',{name:'保存并连接',exact:true}).click();
   const deadline=Date.now()+30000;
   while(Date.now()<deadline){
-   if(await frame.locator('ssh-tab .tabby-connection-status[data-state=connected]').count())break;
+   if(await frame.evaluate(()=>(window.__testTabs||[]).some(t=>t.profile.type==='ssh'&&t.session&&t.session.open)))break;
    const key=frame.getByRole('button',{name:/接受并记住密钥|Accept and remember key/i});if(await key.isVisible())await key.click({force:true});
    await page.waitForTimeout(100);
   }
-  const connected=()=>frame.locator('ssh-tab .tabby-connection-status[data-state=connected]');
+  const connected=(type='ssh')=>({waitFor:options=>frame.waitForFunction(type=>(window.__testTabs||[]).some(t=>t.profile.type===type&&t.session&&t.session.open),type,options)});
+  async function disconnect(type){const close=frame.locator('sftp-panel .btn-close');if(await close.isVisible()){await close.click();await frame.locator('sftp-panel').waitFor({state:'hidden'});}await frame.locator((type==='ssh'?'ssh-tab':'lightos-terminal-tab')+' .xterm').click({button:'right'});await frame.getByText('断开连接',{exact:true}).last().click();}
   try{await connected().waitFor({timeout:3000});}catch(e){console.log('STATE',await frame.locator('body').innerText(),errors);throw e;}
-  await page.waitForTimeout(400);assert.equal(shells.length,1);assert.equal(auths,2,'initial trust/auth plus server-owned shell');
+  await page.waitForTimeout(400);assert.equal(await frame.locator('.tabby-connection-status').count(),0);assert.equal(await frame.locator('terminal-toolbar').getByRole('button',{name:'断开连接',exact:true}).count(),0);assert.equal(shells.length,1);assert.equal(auths,2,'initial trust/auth plus server-owned shell');
   await frame.locator('ssh-tab .xterm').click();await page.keyboard.type('BEFORE_CLOSE');await page.waitForTimeout(100);
   await page.close();shells[0].write('\r\nSSH_JOB_CONTINUES_OFFLINE\r\n');
   ({page,frame}=await load());await connected().waitFor();await page.waitForTimeout(400);
@@ -72,29 +73,30 @@ const server=new Server({algorithms:{kex:['ecdh-sha2-nistp256']},hostKeys:[gener
   const text=await screen();assert.match(text,/SSH_JOB_CONTINUES_OFFLINE/);assert.match(text,/AFTER_REOPEN/);
   await frame.getByText('SFTP',{exact:true}).click();await frame.locator('sftp-panel').getByText('persistent-sftp.txt',{exact:true}).waitFor();
   await frame.getByRole('button',{name:'连接首页',exact:true}).click();await frame.getByRole('button',{name:'LZC OS 本机终端',exact:true}).click();
-  await frame.locator('lightos-terminal-tab .tabby-connection-status[data-state=connected]').waitFor();
+  await connected('lightos').waitFor();
+  assert.equal(await frame.locator('lightos-terminal-tab terminal-toolbar').count(),1);assert.equal(await frame.locator('lightos-terminal-tab terminal-toolbar').getByRole('button',{name:'重新连接',exact:true}).count(),1);assert.equal(await frame.locator('lightos-terminal-tab terminal-toolbar').getByRole('button',{name:'文件传输',exact:true}).count(),1);assert.equal(await frame.locator('terminal-toolbar').getByRole('button',{name:'断开连接',exact:true}).count(),0);
   await frame.locator('lightos-terminal-tab .xterm').click();await page.keyboard.type('export PERSIST_FIXTURE=kept; echo HOST_PID=$$; (sleep 1; echo HOST_JOB_FINISHED) &');await page.keyboard.press('Enter');
   await page.waitForTimeout(300);await page.close();await new Promise(r=>setTimeout(r,1300));
-  ({page,frame}=await load());await frame.locator('lightos-terminal-tab .tabby-connection-status[data-state=connected]').waitFor();await page.waitForTimeout(400);
+  ({page,frame}=await load());await connected('lightos').waitFor();await page.waitForTimeout(400);
   await frame.locator('lightos-terminal-tab .xterm').click();await page.keyboard.type('echo ENV=$PERSIST_FIXTURE; echo RESTORED_PID=$$');await page.keyboard.press('Enter');await page.waitForTimeout(400);
   const hostText=await screen();assert.match(hostText,/HOST_JOB_FINISHED/);assert.match(hostText,/ENV=kept/);assert.equal(hostText.match(/HOST_PID=(\d+)/)[1],hostText.match(/RESTORED_PID=(\d+)/)[1]);
   // Explicit disconnect removes just this host session; it must not reappear.
-  await frame.locator('lightos-terminal-tab .tabby-connection-status').getByRole('button',{name:'断开连接',exact:true}).click();await page.waitForTimeout(200);await page.close();
+  await disconnect('lightos');await page.waitForTimeout(200);await page.close();
   ({page,frame}=await load());await connected().waitFor();assert.equal(await frame.locator('lightos-terminal-tab').count(),0);assert.equal(shells.length,1);
   await frame.getByRole('button',{name:'连接首页',exact:true}).click();
   await frame.locator('tabby-connection-hub').getByRole('button',{name:'LightOS 实例',exact:true}).click();
   await frame.locator('tabby-connection-hub .row-item').filter({hasText:'fixture'}).getByRole('button',{name:'打开终端',exact:true}).click();
-  await frame.locator('lightos-terminal-tab .tabby-connection-status[data-state=connected]').waitFor();
+  await connected('lightos').waitFor();
   await frame.locator('lightos-terminal-tab .xterm').click();await page.keyboard.type('export LIGHTOS_FIXTURE=kept; echo LIGHTOS_PID=$$');await page.keyboard.press('Enter');await page.waitForTimeout(200);await page.close();
-  ({page,frame}=await load());await frame.locator('lightos-terminal-tab .tabby-connection-status[data-state=connected]').waitFor();
+  ({page,frame}=await load());await connected('lightos').waitFor();
   await frame.locator('lightos-terminal-tab .xterm').click();await page.keyboard.type('echo LIGHTOS_ENV=$LIGHTOS_FIXTURE; echo LIGHTOS_RESTORED_PID=$$');await page.keyboard.press('Enter');await page.waitForTimeout(300);
   const lightosText=await screen();assert.match(lightosText,/LIGHTOS_ENV=kept/);assert.equal(lightosText.match(/LIGHTOS_PID=(\d+)/)[1],lightosText.match(/LIGHTOS_RESTORED_PID=(\d+)/)[1]);
-  await frame.locator('lightos-terminal-tab .tabby-connection-status').getByRole('button',{name:'断开连接',exact:true}).click();
+  await disconnect('lightos');
   await frame.getByRole('button',{name:'连接首页',exact:true}).click();await frame.locator('tabby-connection-hub').getByRole('button',{name:'回到终端',exact:true}).click();
   await frame.getByText('Reconnect',{exact:true}).evaluate(label=>{const b=label.closest('button');b.click();b.click();});
   await connected().waitFor();await page.waitForTimeout(400);assert.equal(shells.length,2,'rapid reconnect must create exactly one new shell');
   await frame.getByText('SFTP',{exact:true}).click();await frame.locator('sftp-panel').getByText('persistent-sftp.txt',{exact:true}).waitFor();
-  assert.deepEqual(errors,[]);console.log('Persistence browser passed: original SSH shell, host and LightOS PID/environment, offline output/jobs, automatic restore, no re-authentication, SFTP after restore/reconnect, rapid reconnect, explicit disconnect, account isolation covered separately.');
-  await frame.locator('ssh-tab .tabby-connection-status').getByRole('button',{name:'断开连接',exact:true}).click();
+  assert.deepEqual(errors,[]);console.log('Persistence browser checks passed: original SSH shell, host and LightOS PID/environment, offline output/jobs, automatic restore, no re-authentication, SFTP after restore/reconnect, rapid reconnect, right-click disconnect, original toolbars and no duplicate status/disconnect bar.');
+  await disconnect('ssh');
  }finally{await browser.close();for(const c of connections)c._sock.destroy();await new Promise(resolve=>server.close(resolve));}
 })().catch(e=>{console.error(e);process.exitCode=1;for(const c of connections)c._sock.destroy();server.close();});
